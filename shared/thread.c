@@ -5,6 +5,7 @@
  * our signal handling and urcu thread registration.
  */
 
+#include <assert.h>
 #include <errno.h>
 #include <signal.h>
 #include <pthread.h>
