@@ -12,6 +12,8 @@ enum {
 	NGNFS_MSG_GET_BLOCK_RESULT,
 	NGNFS_MSG_WRITE_BLOCK,
 	NGNFS_MSG_WRITE_BLOCK_RESULT,
+	NGNFS_MSG_GET_MAPS,
+	NGNFS_MSG_GET_MAPS_RESULT,
 	NGNFS_MSG__NR,
 };
 
@@ -60,6 +62,28 @@ struct ngnfs_msg_write_block_result {
 	__le64 bnr;
 	__u8 err;
 	__u8 _pad[7];
+};
+
+struct ngnfs_devd_map {
+	__le64 version;
+	__le64 nr_addrs;
+	struct ngnfs_ipv4_addr {
+		__le64 device_uuid; /* XXX future :) */
+		__le32 addr;
+		__le16 port;
+		__le16 _pad;
+	} addrs[];
+};
+
+struct ngnfs_msg_get_maps {
+	__u8 map_id; /* XXX future */
+	__u8 _pad[7];
+};
+
+struct ngnfs_msg_get_maps_result {
+	__u8 err;
+	__u8 _pad[7];
+	struct ngnfs_devd_map devd_map;
 };
 
 #endif
