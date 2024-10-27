@@ -22,7 +22,7 @@
 #include "shared/format-block.h"
 #include "shared/format-msg.h"
 #include "shared/fs_info.h"
-#include "shared/manifest.h"
+#include "shared/map.h"
 #include "shared/msg.h"
 #include "shared/string_wrappers.h"
 #include "shared/trace.h"
@@ -475,7 +475,7 @@ static int send_to_bnr(struct ngnfs_fs_info *nfi, u64 bnr, struct ngnfs_msg_desc
 	struct sockaddr_in addr;
 	int ret;
 
-	ret = ngnfs_manifest_map_block(nfi, bnr, &addr);
+	ret = ngnfs_map_map_block(nfi, bnr, &addr);
 	if (ret == 0) {
 		mdesc->addr = &addr;
 		ret = ngnfs_msg_send(nfi, mdesc);
