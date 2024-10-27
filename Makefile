@@ -17,7 +17,7 @@ LDFLAGS := -Wl,--gc-sections -lurcu-common -lurcu -lurcu-cds -lxxhash -luring -l
 LDFLAGS += -rdynamic
 
 # build all c files in source directories
-DIR := cli devd shared shared/lk utask
+DIR := cli devd mapd shared shared/lk utask
 SRC := $(foreach d,$(DIR),$(wildcard $(d)/*.c))
 OBJ := $(patsubst %.c,%.o,$(SRC))
 DEP := $(foreach d,$(DIR),$(wildcard $(d)/*.d))

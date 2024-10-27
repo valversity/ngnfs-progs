@@ -108,6 +108,8 @@ struct ngnfs_maps {
  * TODO: currently a message can't have both ctl_size and buf_size of 0.
  * Either this will expand to have something in it or we will allow
  * that.
+ *
+ * XXX still true?
  */
 struct ngnfs_msg_get_maps {
 	__u8 _pad[8];

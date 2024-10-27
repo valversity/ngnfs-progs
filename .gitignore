@@ -7,6 +7,8 @@ shared/generated-trace-inlines.h
 utask/utask_gen_defs.h
 cli/ngnfs-cli
 devd/ngnfs-devd
+mapd/ngnfs-mapd
 lib/libngnfs.a
 shared/lk/gen/gen_crc64table
 shared/lk/crc64table.h
+
