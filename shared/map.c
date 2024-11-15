@@ -175,8 +175,6 @@ static int update_maps(struct ngnfs_fs_info *nfi, struct ngnfs_maps *new_maps)
 		tmp = unrcu_pointer(cmpxchg(&minf->maps_rcu, old_rmaps, new_rmaps));
 	} while (tmp != old_rmaps);
 
-	wake_up(&minf->updates_waitq);
-
 	if (old_rmaps)
 		kfree_rcu(&old_rmaps->rcu);
 
@@ -266,6 +264,7 @@ static int map_get_maps_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc 
 		return ngnfs_msg_err(gmr->err);
 
 	ret = update_maps(nfi, msg_to_maps(gmr));
+	wake_up(&nfi->map_info->updates_waitq);
 
 	return ret;
 }
