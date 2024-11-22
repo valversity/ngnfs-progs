@@ -18,6 +18,7 @@
 
 #include "shared/block.h"
 #include "shared/btr-msg.h"
+#include "shared/lk/wait.h"
 #include "shared/log.h"
 #include "shared/map.h"
 #include "shared/mount.h"
@@ -26,6 +27,7 @@
 #include "shared/nerr.h"
 #include "shared/options.h"
 #include "shared/parse.h"
+#include "shared/shutdown.h"
 #include "shared/trace.h"
 
 struct mount_options {
@@ -36,7 +38,7 @@ struct mount_options {
 static struct option_more mount_moreopts[] = {
 	{ .longopt = { "addr", required_argument, NULL, 'a' },
 	  .arg = "addr:port",
-	  .desc = "IPv4 address and port of mapd server to query",
+	  .desc = "IPv4 address and port of mapd server",
 	  .required = 1, },
 
 	{ .longopt = { "trace_file", required_argument, NULL, 't' },
@@ -74,8 +76,10 @@ int ngnfs_mount(struct ngnfs_fs_info *nfi, int argc, char **argv)
 	ret = trace_setup(opts.trace_path) ?:
 	      ngnfs_map_setup(nfi) ?:
 	      ngnfs_msg_setup(nfi, &ngnfs_mtr_socket_ops, NULL, NULL) ?:
-	      ngnfs_map_client_setup(nfi, &opts.mapd_server_addr) ?:
-	      ngnfs_block_setup(nfi, &ngnfs_btr_msg_ops, NULL);
+	      ngnfs_block_setup(nfi, &ngnfs_btr_msg_ops, NULL) ?:
+	      ngnfs_map_client_setup(nfi, &opts.mapd_server_addr)? :
+	      ngnfs_map_request_maps(nfi);
+
 out:
 	if (ret < 0)
 		ngnfs_unmount(nfi);
@@ -85,8 +89,9 @@ out:
 
 void ngnfs_unmount(struct ngnfs_fs_info *nfi)
 {
-	ngnfs_block_destroy(nfi);
+	ngnfs_shutdown(nfi, 0);
 	ngnfs_map_client_destroy(nfi);
+	ngnfs_block_destroy(nfi);
 	ngnfs_msg_destroy(nfi);
 	ngnfs_map_destroy(nfi);
 }
