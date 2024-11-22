@@ -21,6 +21,7 @@
 #include "shared/map.h"
 #include "shared/msg.h"
 #include "shared/parse.h"
+#include "shared/shutdown.h"
 
 struct ngnfs_devd_addrs {
 	u8 nr_addrs;
@@ -331,6 +332,14 @@ int ngnfs_map_addrs_to_maps(struct ngnfs_fs_info *nfi, struct list_head *list, u
 		return PTR_ERR(maps);
 
 	return update_maps(nfi, maps);
+}
+
+void ngnfs_map_client_shutdown(struct ngnfs_fs_info *nfi)
+{
+	struct ngnfs_map_info *minf = nfi->map_info;
+
+	if (minf)
+		wake_up(&nfi->map_info->updates_waitq);
 }
 
 void ngnfs_map_destroy(struct ngnfs_fs_info *nfi)
