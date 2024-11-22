@@ -49,7 +49,8 @@ struct ngnfs_maps_rcu {
 };
 
 struct ngnfs_map_info {
-	struct wait_queue_head updates_waitq;
+	struct wait_queue_head request_waitq;
+	struct sockaddr_in mapd_server_addr;
 	struct ngnfs_maps_rcu *maps_rcu;
 };
 
@@ -204,6 +205,53 @@ struct sockaddr_in map_to_addr(struct ngnfs_ipv4_addr *src_addr)
 }
 
 /*
+ * Request the maps but don't wait for them.
+ */
+int ngnfs_map_request_maps(struct ngnfs_fs_info *nfi)
+{
+	struct ngnfs_map_info *minf = nfi->map_info;
+	struct ngnfs_msg_get_maps gm;
+	struct ngnfs_msg_desc mdesc;
+
+	gm.map_id = 0; /* XXX future */
+
+	mdesc.type = NGNFS_MSG_GET_MAPS;
+	mdesc.addr = &minf->mapd_server_addr;
+	mdesc.ctl_buf = &gm;
+	mdesc.ctl_size = sizeof(gm);
+	mdesc.data_page = NULL;
+	mdesc.data_size = 0;
+
+	return ngnfs_msg_send(nfi, &mdesc);
+}
+
+/*
+ * Request the maps from the mapd server and wait till they arrive.
+ */
+int ngnfs_map_get_maps(struct ngnfs_fs_info *nfi)
+{
+	struct ngnfs_map_info *minf = nfi->map_info;
+	int ret;
+
+	if (minf->maps_rcu != NULL)
+		return 0;
+
+	ret = ngnfs_map_request_maps(nfi);
+	if (ret < 0)
+		return ret;
+
+	wait_event(&minf->request_waitq, ((minf->maps_rcu != NULL) ||
+					  ngnfs_should_shutdown(nfi)));
+
+	if (ngnfs_should_shutdown(nfi))
+		ret = -ESHUTDOWN;
+	else
+		ret = 0;
+
+	return ret;
+}
+
+/*
  * Caller is responsible for noticing if the maps have changed and restarting
  * the transaction. TODO: how?
  */
@@ -211,6 +259,11 @@ int ngnfs_map_map_block(struct ngnfs_fs_info *nfi, u64 bnr, struct sockaddr_in *
 {
 	struct ngnfs_maps_rcu *nm;
 	u32 rem;
+	int ret;
+
+	ret = ngnfs_map_get_maps(nfi);
+	if (ret < 0)
+		return ret;
 
 	rcu_read_lock();
 
@@ -221,36 +274,6 @@ int ngnfs_map_map_block(struct ngnfs_fs_info *nfi, u64 bnr, struct sockaddr_in *
 	rcu_read_unlock();
 
 	return 0;
-}
-
-/*
- * Request initial maps from mapd server at addr and wait until they are
- * received.
- */
-int ngnfs_maps_request(struct ngnfs_fs_info *nfi, struct sockaddr_in *addr)
-{
-	struct ngnfs_map_info *minf = nfi->map_info;
-	struct ngnfs_msg_get_maps gm;
-	struct ngnfs_msg_desc mdesc;
-	int ret;
-
-	gm.map_id = 0; /* XXX future */
-
-	mdesc.type = NGNFS_MSG_GET_MAPS;
-	mdesc.addr = addr;
-	mdesc.ctl_buf = &gm;
-	mdesc.ctl_size = sizeof(gm);
-	mdesc.data_page = NULL;
-	mdesc.data_size = 0;
-
-	ret = ngnfs_msg_send(nfi, &mdesc);
-	if (ret < 0)
-		return ret;
-
-	/* TODO: Needs a timeout or way to return an error */
-	wait_event(&minf->updates_waitq, minf->maps_rcu != NULL);
-
-	return ret;
 }
 
 /*
@@ -265,7 +288,7 @@ static int map_get_maps_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc 
 		return ngnfs_msg_err(gmr->err);
 
 	ret = update_maps(nfi, msg_to_maps(gmr));
-	wake_up(&nfi->map_info->updates_waitq);
+	wake_up(&nfi->map_info->request_waitq);
 
 	return ret;
 }
@@ -339,7 +362,7 @@ void ngnfs_map_client_shutdown(struct ngnfs_fs_info *nfi)
 	struct ngnfs_map_info *minf = nfi->map_info;
 
 	if (minf)
-		wake_up(&nfi->map_info->updates_waitq);
+		wake_up(&nfi->map_info->request_waitq);
 }
 
 void ngnfs_map_destroy(struct ngnfs_fs_info *nfi)
@@ -364,7 +387,7 @@ int ngnfs_map_setup(struct ngnfs_fs_info *nfi)
 		goto out;
 	}
 
-	init_waitqueue_head(&minf->updates_waitq);
+	init_waitqueue_head(&minf->request_waitq);
 	nfi->map_info = minf;
 
 	ret = 0;
@@ -381,15 +404,9 @@ void ngnfs_map_client_destroy(struct ngnfs_fs_info *nfi)
 
 int ngnfs_map_client_setup(struct ngnfs_fs_info *nfi, struct sockaddr_in *mapd_server_addr)
 {
-	int ret;
+	struct ngnfs_map_info *minf = nfi->map_info;
 
-	ret = ngnfs_msg_register_recv(nfi, NGNFS_MSG_GET_MAPS_RESULT, map_get_maps_result);
-	if (ret < 0)
-		return ret;
+	minf->mapd_server_addr = *mapd_server_addr;
 
-	ret = ngnfs_maps_request(nfi, mapd_server_addr);
-	if (ret < 0)
-		ngnfs_map_client_destroy(nfi);
-
-	return ret;
+	return ngnfs_msg_register_recv(nfi, NGNFS_MSG_GET_MAPS_RESULT, map_get_maps_result);
 }
