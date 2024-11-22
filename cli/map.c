@@ -13,6 +13,7 @@
 
 #include "shared/lk/kernel.h"
 #include "shared/lk/types.h"
+#include "shared/lk/wait.h"
 
 #include "shared/fs_info.h"
 #include "shared/log.h"
@@ -22,6 +23,7 @@
 #include "shared/nerr.h"
 #include "shared/options.h"
 #include "shared/parse.h"
+#include "shared/shutdown.h"
 #include "shared/thread.h"
 #include "shared/trace.h"
 
@@ -61,9 +63,53 @@ static int parse_map_opt(int c, char *str, void *arg)
 	return ret;
 }
 
+/*
+ * The triple-wrapped threading allows for cancellation and clean up
+ * thusly:
+ *
+ * Thread 1: main(), waits for signals to initiate shutdown
+ * Thread 2: map_thread(), does non-blocking setup, blocks, does shutdown
+ * Thread 3: map_request_thread(), does blocking activities
+ *
+ * Thread 1 is a system-level monitor thread that keeps signals enabled
+ * and listens for a signal to shutdown. Because ngnfs uses RCU, the
+ * threads that actually call ngnfs routines have to have signals
+ * blocked.
+ *
+ * Thread 2 is an ngnfs-level monitor thread that does non-blocking
+ * setup, then spins off a thread to do blocking ops. It then waits for
+ * either the child to complete, or the parent to tell it to shutdown.
+ * When it wakes, it calls the various ngnfs shutdown functions, which
+ * make all the threads shutdown and return gracefully.
+ *
+ * Thread 3 does actual IO. It will exit when it finishes, or when
+ * thread 1 gets a signal, which causes thread 2 to call the shutdown
+ * functions.
+ */
+
+struct map_request_thread_args {
+	struct ngnfs_fs_info *nfi;
+	struct sockaddr_in *mapd_server_addr;
+	struct wait_queue_head *waitq;
+	bool done;
+	int ret;
+};
+
+static void map_request_thread(struct thread *thr, void *arg)
+{
+	struct map_request_thread_args *rargs = arg;
+	struct ngnfs_fs_info *nfi = rargs->nfi;
+
+	rargs->ret = ngnfs_map_get_maps(nfi);
+
+	rargs->done = true;
+	wake_up(rargs->waitq);
+}
+
 struct map_thread_args {
 	int argc;
 	char **argv;
+	struct wait_queue_head waitq;
 	int ret;
 };
 
@@ -71,6 +117,8 @@ static void map_thread(struct thread *thr, void *arg)
 {
 	struct map_thread_args *margs = arg;
 	struct ngnfs_fs_info nfi = INIT_NGNFS_FS_INFO;
+	struct map_request_thread_args rargs = { };
+	struct thread rthr;
 	int ret;
 
 	struct map_options opts = { };
@@ -80,21 +128,40 @@ static void map_thread(struct thread *thr, void *arg)
 	if (ret < 0)
 		goto out;
 
+	thread_init(&rthr);
+	rargs.nfi = &nfi;
+	rargs.mapd_server_addr = &opts.mapd_server_addr;
+	rargs.waitq = &margs->waitq;
+
 	ret = trace_setup(opts.trace_path) ?:
 	      ngnfs_map_setup(&nfi) ?:
 	      ngnfs_msg_setup(&nfi, &ngnfs_mtr_socket_ops, NULL, NULL) ?:
-	      ngnfs_map_client_setup(&nfi, &opts.mapd_server_addr);
+	      ngnfs_map_client_setup(&nfi, &opts.mapd_server_addr) ?:
+	      thread_start(&rthr, map_request_thread, &rargs);
 
 	if (ret < 0)
-		log("error requesting map: "ENOF, ENOA(-ret));
-	else
-		log("map received");
+		goto out;
 
+	wait_event(&margs->waitq, rargs.done || thread_should_return(thr));
+	ret = rargs.ret;
+
+	if (rargs.done != true) {
+		thread_stop_indicate(&rthr);
+		thread_stop_wait(&rthr);
+		ret = nfi.global_errno;
+	}
+out:
+	margs->ret = ret;
+
+	ngnfs_shutdown(&nfi, margs->ret);
 	ngnfs_map_client_destroy(&nfi);
 	ngnfs_msg_destroy(&nfi);
 	ngnfs_map_destroy(&nfi);
-out:
-	margs->ret = ret;
+
+	if (margs->ret < 0)
+		log("error requesting map: "ENOF, ENOA(-margs->ret));
+	else
+		log("map received");
 }
 
 static int map_func(int argc, char **argv)
@@ -107,6 +174,7 @@ static int map_func(int argc, char **argv)
 	int ret;
 
 	thread_init(&thr);
+	init_waitqueue_head(&margs.waitq);
 
 	ret = thread_prepare_main();
 	if (ret < 0)
@@ -115,6 +183,8 @@ static int map_func(int argc, char **argv)
 	ret = thread_start(&thr, map_thread, &margs) ?:
 	      thread_sigwait();
 
+	thread_stop_indicate(&thr);
+	wake_up(&margs.waitq);
 	thread_stop_wait(&thr);
 
 out:
