@@ -1,3 +1,34 @@
+## Running
+
+Compile the code with make. You will need librcu and sparse installed.
+The sparse package tends to depend on a lot of other packages, so you
+may want to build and install your own.
+
+ngnfs currently only runs in userspace. There are two components: the
+devd process and the debugfs process.
+
+The devd process listens on a socket for block IO requests. The
+debugfs process reads commands from stdin and turns them into ngnfs
+operations, which generate IO requests to the devd process. Thus you
+need to tell the devd process where to listen and the debugfs process
+where to connect. The devd process also needs to know where its
+backing store is. Another required argument is a path to a file to
+write trace data to.
+
+Example invocation:
+
+```
+	$ truncate -s 1G ~/tmp/dev
+	$ ./devd/ngnfs-devd -d ~/tmp/dev -l 127.0.0.1:8081 -t /tmp/trace_devd
+```
+
+In another terminal:
+
+```
+	$ ./cli/ngnfs-cli debugfs -d 127.0.0.1:8081 -t /tmp/trace_debugfs
+	<1> $ mkfs
+	<1> $ stat
+```
 
 ## Code Layout
 
