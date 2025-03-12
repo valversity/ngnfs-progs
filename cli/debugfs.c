@@ -222,6 +222,34 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 	free(buf);
 }
 
+/*
+ * Basic rename hack for now.
+ *
+ * XXX assumes that you want to move a file from the current directory to ..
+ */
+static void cmd_rename(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry parent;
+	char *name;
+	size_t name_len;
+	int ret;
+
+	if (argc != 2) {
+		printf("usage: rename <filename>\n");
+		printf("will move <filename> to ..\n");
+		return;
+	}
+
+	name = argv[1];
+	name_len = strlen(name);
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, "..", strlen(".."), &parent)		?:
+	      ngnfs_dir_rename(ctx->nfi, &ctx->cwd_ig, name, name_len, &parent.ig, name, name_len);
+
+	if (ret < 0)
+		print_err("rename", ret);
+}
+
 static void cmd_rmdir(struct debugfs_context *ctx, int argc, char **argv)
 {
 	char *name;
@@ -332,6 +360,7 @@ static struct command {
 	{ "mkfs", cmd_mkfs, },
 	{ "quit", cmd_quit, },
 	{ "readdir", cmd_readdir, },
+	{ "rename", cmd_rename, },
 	{ "rmdir", cmd_rmdir, },
 	{ "stat", cmd_stat, },
 	{ "sync", cmd_sync, },
