@@ -20,6 +20,7 @@
 #include "shared/log.h"
 #include "shared/mkfs.h"
 #include "shared/mount.h"
+#include "shared/nerr.h"
 #include "shared/thread.h"
 
 #include "cli/cli.h"
@@ -79,13 +80,26 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 	int ret;
 	int i;
 
+	if (argc > 2) {
+		printf("usage: readdir [position]\n");
+		return;
+	}
+
+	pos = 0;
+	if (argc == 2) {
+		ret = strtoull_nerr(&pos, argv[1], NULL, 0);
+		if (ret < 0) {
+			printf("invalid position: %s\n", argv[1]);
+			return;
+		}
+	}
+
 	buf = malloc(size);
 	if (!buf) {
 		printf("malloc error");
 		return;
 	}
 
-	pos = 0;
 	while (true) {
 		ret = ngnfs_dir_readdir(ctx->nfi, &ctx->cwd_ig, pos, buf, size);
 		if (ret <= 0) {
