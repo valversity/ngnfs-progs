@@ -54,7 +54,6 @@ static u64 name_hash(void *name, size_t name_len)
 struct dirent_args {
 	u64 hash;
 	size_t dent_size;
-	u8 dtype;
 	u64 ino;
 
 	struct ngnfs_dirent dent;
@@ -68,8 +67,10 @@ static void init_dirent_key(struct ngnfs_btree_key *key, u64 hash)
 	};
 }
 
-/* Convert a POSIX file mode to an ngnfs on-disk dirent type */
-static enum ngnfs_dentry_type mode_to_type(umode_t mode)
+/*
+ * Convert a POSIX file mode to an ngnfs persistent dirent type.
+ */
+static enum ngnfs_dentry_type mode_to_pers_type(umode_t mode)
 {
 #define S_SHIFT 12
 	static unsigned char mode_types[S_IFMT >> S_SHIFT] = {
@@ -86,8 +87,11 @@ static enum ngnfs_dentry_type mode_to_type(umode_t mode)
 #undef S_SHIFT
 }
 
-/* Convert the on-disk ngnfs dirent dtype to the POSIX d_type */
-unsigned int ngnfs_type_to_dtype(enum ngnfs_dentry_type type)
+/*
+ * Convert the persistent ngnfs directory entry type to the POSIX ABI
+ * dtype.
+ */
+static unsigned int pers_dtype_to_abi_dtype(enum ngnfs_dentry_type type)
 {
 	static unsigned char types[] = {
 		[NGNFS_DT_FIFO]	= DT_FIFO,
@@ -110,11 +114,10 @@ static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len
 {
 	da->hash = name_hash(name, name_len);
 	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
-	da->dtype = IFTODT(mode);
 
 	da->dent.ino = cpu_to_le64(ino);
 	da->dent.version = cpu_to_le64(0); /* XXX :/ */
-	da->dent.type = mode_to_type(mode);
+	da->dent.pers_dtype = mode_to_pers_type(mode);
 	da->dent.name_len = name_len;
 
 	/* ensure that we're stitching together a contiguous max name buffer */
@@ -150,7 +153,7 @@ static int update_dir(struct ngnfs_txn_block *tblk, struct ngnfs_inode *dir,
 	s32 delta;
 	int ret;
 
-	if (S_ISDIR(le32_to_cpu(dir->mode))) {
+	if (da->dent.pers_dtype == NGNFS_DT_DIR) {
 		delta = posneg * 1;
 		if ((le32_to_cpu(dir->nlink) + delta >= NGNFS_LINK_MAX)) {
 			ret = -EMLINK;
@@ -296,7 +299,7 @@ static int fill_dirent_rd(struct ngnfs_btree_key *key, void *val, size_t val_siz
 	ra->ent->ino = le64_to_cpu(dent->ino);
 	ra->ent->gen = le64_to_cpu(dent->version);
 	ra->ent->next_offset = aligned;
-	ra->ent->dtype = ngnfs_type_to_dtype(dent->type);
+	ra->ent->dtype = pers_dtype_to_abi_dtype(dent->pers_dtype);
 	ra->ent->name_len = dent->name_len;
 	memcpy(ra->ent->name, dent->name, dent->name_len);
 	ra->ent->name[ra->ent->name_len] = '\0';

@@ -38,8 +38,4 @@ struct ngnfs_readdir_entry {
 int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, u64 dir_ino, u64 pos,
 		      struct ngnfs_readdir_entry *buf, size_t size);
 
-enum ngnfs_dentry_type;
-
-unsigned int ngnfs_type_to_dtype(enum ngnfs_dentry_type type);
-
 #endif

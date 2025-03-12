@@ -125,7 +125,7 @@ enum ngnfs_dentry_type {
 struct ngnfs_dirent {
 	__le64 ino;
 	__le64 version; /* XXX ? */
-	__u8 type;
+	__u8 pers_dtype; /* ngnfs persistent directory entry type */
 	__u8 name_len; /* no null termination */
 	__u8 name[6]; /* definition pads to alignment, stored can be smaller */
 };
