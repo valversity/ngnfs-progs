@@ -181,11 +181,28 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 
 static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_inode_ino_gen root_ig = INIT_NGNFS_ROOT_IG;
+	struct ngnfs_inode_ino_gen ig = ctx->cwd_ig;
+	struct ngnfs_dir_lookup_entry lent;
 	struct ngnfs_inode ninode;
+	char *name;
 	int ret;
 
-	ret = ngnfs_inode_read_copy(ctx->nfi, &root_ig, &ninode, sizeof(ninode));
+	if (argc > 2) {
+		printf("usage: stat [filename]\n");
+		return;
+	}
+
+	if (argc == 2) {
+		name = argv[1];
+		ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
+		if (ret < 0) {
+			print_err("stat", ret);
+			return;
+		}
+		ig = lent.ig;
+	}
+
+	ret = ngnfs_inode_read_copy(ctx->nfi, &ig, &ninode, sizeof(ninode));
 
 	if (ret < 0) {
 		print_err("stat", ret);
