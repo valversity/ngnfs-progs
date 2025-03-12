@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
+#include <dirent.h>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -53,6 +55,33 @@ static void print_err(char *cmd, int err)
 		printf("%s error: "ENOF"\n", cmd, ENOA(-err));
 	else
 		log("%s unexpected error: "ENOF, cmd, ENOA(-err));
+}
+
+static void cmd_cd(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *name;
+	int ret;
+
+	if (argc != 2) {
+		printf("usage: cd <directory name>\n");
+		return;
+	}
+
+	name = argv[1];
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
+	if (ret < 0) {
+		print_err("cd", ret);
+		return;
+	}
+
+	if (lent.dtype != DT_DIR) {
+		printf("cd: not a directory: %s", name);
+		return;
+	}
+
+	ctx->cwd_ig = lent.ig;
 }
 
 static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
@@ -249,6 +278,7 @@ static struct command {
 	char *name;
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
 } commands[] = {
+	{ "cd", cmd_cd, },
 	{ "create", cmd_create, },
 	{ "lookup", cmd_lookup, },
 	{ "mkfs", cmd_mkfs, },
