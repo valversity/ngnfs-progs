@@ -4,6 +4,7 @@
 
 #include "shared/inode.h"
 #include "shared/fs_info.h"
+#include "shared/inode.h"
 
 int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
 		     char *name, size_t name_len);

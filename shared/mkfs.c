@@ -27,7 +27,7 @@ int ngnfs_mkfs(struct ngnfs_fs_info *nfi)
 
 	do {
 		ret = ngnfs_inode_get(nfi, &txn, NBF_WRITE, &ig, &itref)			?:
-		      ngnfs_inode_init(&itref, &ig, 2, S_IFDIR | 0755, nsec);
+		      ngnfs_inode_init(&itref, &ig, 2, S_IFDIR | 0755, nsec, &ig);
 
 	} while (ngnfs_txn_retry(nfi, &txn, &ret));
 
