@@ -82,8 +82,9 @@ static u64 name_hash(void *name, size_t name_len)
  */
 struct dirent_args {
 	u64 hash;
-	size_t dent_size;
+	struct ngnfs_dirent target; /* filled out if rename replaces a dirent */
 
+	size_t dent_size;
 	struct ngnfs_dirent dent;
 	u8 __max_name_storage[NGNFS_NAME_MAX - sizeof_field(struct ngnfs_dirent, name)];
 };
@@ -143,8 +144,8 @@ static unsigned int pers_dtype_to_abi_dtype(enum ngnfs_dentry_type type)
 static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len, mode_t mode)
 {
 	da->hash = name_hash(name, name_len);
-	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
 
+	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
 	da->dent.pers_dtype = mode_to_pers_type(mode);
 	da->dent.name_len = name_len;
 	memcpy(da->dent.name, name, name_len);
@@ -187,28 +188,54 @@ static inline int check_ifmt(struct ngnfs_inode *ninode, u32 ifmt, int err)
 }
 
 /*
- * Update a directory's inode to reflect creation.  We can return errors
- * if the create should fail.
+ * Update a parent directory's inode to reflect creation or deletion of
+ * an entry. We can return errors if the create should fail.
  */
 static int update_dir(struct ngnfs_txn_block *tblk, struct ngnfs_inode *dir,
-		      struct dirent_args *da, int posneg)
+		      struct ngnfs_dirent *dent, s32 nlink_delta)
 {
-	s32 delta;
+	s32 dent_bytes;
+	s32 posneg;
 	int ret;
 
-	if (da->dent.pers_dtype == NGNFS_DT_DIR) {
-		delta = posneg * 1;
-		if ((le32_to_cpu(dir->nlink) + delta >= NGNFS_LINK_MAX)) {
-			ret = -EMLINK;
+	if (dent->pers_dtype == NGNFS_DT_DIR) {
+		ret = ngnfs_inode_update(tblk, dir, nlink_delta);
+		if (ret < 0)
 			goto out;
-		}
-		ngnfs_tblk_assign(tblk, dir->nlink, cpu_to_le32(le32_to_cpu(dir->nlink) + delta));
 	}
 
+	posneg = nlink_delta >= 0 ? 1 : -1;
 	/* dir i_size includes null termed names */
-	delta = posneg * ((s32)da->dent.name_len + 1);
-	ngnfs_tblk_assign(tblk, dir->size, cpu_to_le64(le64_to_cpu(dir->size) + delta));
+	dent_bytes = posneg * ((s32) dent->name_len + 1);
+	ngnfs_tblk_assign(tblk, dir->size, cpu_to_le64(le64_to_cpu(dir->size) + dent_bytes));
 	ret = 0;
+out:
+	return ret;
+}
+
+/*
+ * If given a dent with a valid inode, update its link count.
+ */
+static int update_inode_from_dent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+				  struct ngnfs_dirent *dent, s32 nlink_delta)
+{
+	struct ngnfs_inode_ino_gen ig;
+	struct ngnfs_inode_txn_ref ino;
+	int ret;
+
+	if (dent->ig.ino == 0) {
+		ret = 0;
+		goto out;
+	}
+
+	ig.ino = le64_to_cpu(dent->ig.ino);
+	ig.gen = le64_to_cpu(dent->ig.gen);
+
+	ret = ngnfs_inode_get(nfi, txn, NBF_WRITE, &ig, &ino);
+	if (ret < 0)
+		goto out;
+
+	ret = ngnfs_inode_update(ino.tblk, ino.ninode, -1);
 out:
 	return ret;
 }
@@ -343,7 +370,7 @@ static int do_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 				       &op->parent_ig)						?:
 		      update_dirent_args(&op->da, &op->ig)					?:
 		      insert_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
-		      update_dir(op->dir.tblk, op->dir.ninode, &op->da, 1);
+		      update_dir(op->dir.tblk, op->dir.ninode, &op->da.dent, 1);
 
 	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
 
@@ -579,4 +606,146 @@ int ngnfs_dir_lookup(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_
 	kfree(op);
 out:
 	return ret;
+}
+
+static int remove_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size, void *arg,
+			    struct ngnfs_btree_op *op)
+{
+	struct ngnfs_dirent *dent = val;
+	struct dirent_args *da = arg;
+
+	if (!dent)
+		return -ENOENT;
+
+	if (!names_equal(dent->name, dent->name_len, da->dent.name, da->dent.name_len))
+		return NGNFS_BTREE_ITER_CONTINUE;
+
+	memcpy(&da->dent, dent, size);
+
+	op->delete = 1;
+
+	return 0;
+}
+
+static int remove_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+			 struct ngnfs_inode_txn_ref *dir, struct dirent_args *da)
+{
+	struct ngnfs_btree_key key;
+	struct ngnfs_btree_key last;
+	int ret;
+
+	init_dirent_key(&key, da->hash);
+	init_dirent_key(&last, da->hash | NGNFS_DIRENT_COLL_BIT);
+
+	ret = ngnfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key, &last,
+				     remove_dirent_wr, da);
+	if (ret < 0)
+		goto out;
+
+	if (da->dent.ig.ino == 0)
+		ret = -ENOENT;
+out:
+	return ret;
+}
+
+static int check_empty_dir(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+			   struct ngnfs_dirent *dent)
+{
+	struct ngnfs_inode_txn_ref dir;
+	struct ngnfs_inode_ino_gen ig;
+	int ret;
+
+	ig.ino = le64_to_cpu(dent->ig.ino);
+	ig.gen = le64_to_cpu(dent->ig.gen);
+
+	ret = ngnfs_inode_get(nfi, txn, NBF_READ, &ig, &dir);
+	if (ret < 0)
+		return ret;
+
+	if (le32_to_cpu(dir.ninode->nlink) != 2)
+		return -ENOTEMPTY;
+
+	return 0;
+}
+
+static int check_remove_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+			       struct ngnfs_inode_txn_ref *dir, struct dirent_args *da,
+			       int want_non_dir)
+{
+	int ret;
+
+	if (want_non_dir) {
+		if (da->dent.pers_dtype == NGNFS_DT_DIR)
+			ret = -EISDIR;
+		else
+			ret = 0;
+		goto out;
+	}
+
+	if (da->dent.pers_dtype != NGNFS_DT_DIR) {
+		ret = -ENOTDIR;
+		goto out;
+	}
+
+	ret = check_empty_dir(nfi, txn, &da->dent);
+out:
+	return ret;
+}
+
+static int do_unlink(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, char *name,
+		     size_t name_len, int flags)
+{
+	struct {
+		struct ngnfs_inode_txn_ref dir;
+		struct ngnfs_transaction txn;
+		struct ngnfs_inode_ino_gen ig;
+		u64 nsec;
+		u64 ino;
+		struct dirent_args da;
+	} *op;
+	int ret;
+
+	if (name_len > NGNFS_NAME_MAX) {
+		ret = -ENAMETOOLONG;
+		goto out;
+	}
+
+	op = kmalloc(sizeof(*op), GFP_NOFS);
+	if (!op) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ngnfs_txn_init(&op->txn);
+	init_dirent_args(&op->da, name, name_len, 0);
+
+	do {
+		op->nsec = ktime_to_ns(ktime_get_real());
+		reset_dirent_args(&op->da);
+
+		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir_ig, &op->dir)		?:
+		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
+		      remove_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
+		      check_remove_dirent(nfi, &op->txn, &op->dir, &op->da, flags)		?:
+		      update_dir(op->dir.tblk, op->dir.ninode, &op->da.dent, -1)		?:
+		      update_inode_from_dent(nfi, &op->txn, &op->da.dent, -1);
+
+	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
+
+	ngnfs_txn_teardown(nfi, &op->txn);
+	kfree(op);
+out:
+	return ret;
+}
+
+int ngnfs_dir_unlink(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, char *name,
+		     size_t name_len)
+{
+	return do_unlink(nfi, dir, name, name_len, 1);
+}
+
+int ngnfs_dir_rmdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, char *name,
+		    size_t name_len)
+{
+	return do_unlink(nfi, dir, name, name_len, 0);
 }
