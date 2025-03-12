@@ -264,7 +264,8 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir, &op->dir)			?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      ngnfs_inode_alloc(nfi, &op->txn, &op->da.ig, &op->inode)			?:
-		      ngnfs_inode_init(&op->inode, &op->da.ig, 1, mode | S_IFREG, op->nsec)	?:
+		      ngnfs_inode_init(&op->inode, &op->da.ig, 1, mode | S_IFREG, op->nsec,
+				       NULL)							?:
 		      update_dirent_args_dent(&op->da)						?:
 		      insert_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
 		      update_dir(op->dir.tblk, op->dir.ninode, &op->da, 1);

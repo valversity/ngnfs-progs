@@ -130,6 +130,8 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 		       "size: %llu\n"
 		       "nlink: %u\n"
 		       "mode: %o\n"
+		       "parent ino: %llu\n"
+		       "parent gen: %llu\n"
 		       "atime: %llu\n"
 		       "ctime: %llu\n"
 		       "mtime: %llu\n"
@@ -139,6 +141,8 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 		       le64_to_cpu(ninode.size),
 		       le32_to_cpu(ninode.nlink),
 		       le32_to_cpu(ninode.mode),
+		       le64_to_cpu(ninode.parent_ig.ino),
+		       le64_to_cpu(ninode.parent_ig.gen),
 		       le64_to_cpu(ninode.atime_nsec),
 		       le64_to_cpu(ninode.ctime_nsec),
 		       le64_to_cpu(ninode.mtime_nsec),
