@@ -132,6 +132,20 @@ static void cmd_lookup(struct debugfs_context *ctx, int argc, char **argv)
 	       lent.ig.gen);
 }
 
+static void cmd_mkdir(struct debugfs_context *ctx, int argc, char **argv)
+{
+	int ret;
+
+	if (argc != 2) {
+		printf("must have one, and only one, directory name to create\n");
+		return;
+	}
+
+	ret = ngnfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, argv[1], strlen(argv[1]));
+	if (ret < 0)
+		print_err("mkdir", ret);
+}
+
 static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
 {
 	int ret;
@@ -281,6 +295,7 @@ static struct command {
 	{ "cd", cmd_cd, },
 	{ "create", cmd_create, },
 	{ "lookup", cmd_lookup, },
+	{ "mkdir", cmd_mkdir, },
 	{ "mkfs", cmd_mkfs, },
 	{ "quit", cmd_quit, },
 	{ "readdir", cmd_readdir, },
