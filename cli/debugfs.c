@@ -246,7 +246,7 @@ out:
 	free(line);
 	free(line_argv);
 	ctx->ret = ret;
-	kill(0, SIGUSR1);
+	kill(getpid(), SIGUSR1);
 }
 
 /*
