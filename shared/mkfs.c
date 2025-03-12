@@ -18,6 +18,7 @@ int ngnfs_mkfs(struct ngnfs_fs_info *nfi)
 {
 	struct ngnfs_inode_txn_ref itref;
 	struct ngnfs_transaction txn;
+	struct ngnfs_inode_ino_gen ig = INIT_NGNFS_ROOT_IG;
 	u64 nsec;
 	int ret;
 
@@ -25,8 +26,8 @@ int ngnfs_mkfs(struct ngnfs_fs_info *nfi)
 	nsec = ktime_to_ns(ktime_get_real());
 
 	do {
-		ret = ngnfs_inode_get(nfi, &txn, NBF_WRITE, NGNFS_ROOT_INO, &itref)		?:
-		      ngnfs_inode_init(&itref, NGNFS_ROOT_INO, 1, 2, S_IFDIR | 0755, nsec);
+		ret = ngnfs_inode_get(nfi, &txn, NBF_WRITE, &ig, &itref)			?:
+		      ngnfs_inode_init(&itref, &ig, 2, S_IFDIR | 0755, nsec);
 
 	} while (ngnfs_txn_retry(nfi, &txn, &ret));
 
