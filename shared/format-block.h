@@ -81,14 +81,28 @@ struct ngnfs_btree_item {
 	(NGNFS_BLOCK_SIZE - offsetof(struct ngnfs_btree_block, ihdrs[NGNFS_BTREE_MAX_ITEMS]))
 
 /*
+ * The inode generation number changes every time a specific inode is
+ * freed and reallocated. The inode number and generation number
+ * uniquely identify a file/dir over its lifetime. This lets users of
+ * references to inodes find out if the inode has changed out from
+ * underneath them. Generally, the inode number and generation number
+ * should be referenced together, so make a struct to keep them
+ * together.
+ */
+
+struct ngnfs_ino_gen {
+	__le64 ino;	/* inode number, starts at 1 */
+	__le64 gen;	/* inode generation, starts at 1 */
+};
+
+/*
  * Inodes are stored in inode blocks.  Inode blocks numbers are directly
  * calculated from the inode number.  The block itself is formatted as a
  * btree block and the inodes (and other inline inode data) are stored
  * as btree items in the block.
  */
 struct ngnfs_inode {
-	__le64 ino;
-	__le64 gen;
+	struct ngnfs_ino_gen ig;
 	__le64 size;
 	__le64 version;
 	__le32 nlink;
@@ -105,6 +119,7 @@ struct ngnfs_inode {
 };
 
 #define NGNFS_ROOT_INO 1
+#define INIT_NGNFS_ROOT_IG { NGNFS_ROOT_INO, 1 }
 
 /*
  * This is totally arbitrary.  It looks like it's 32bit in the stat ABI.
@@ -123,8 +138,7 @@ enum ngnfs_dentry_type {
 };
 
 struct ngnfs_dirent {
-	__le64 ino;
-	__le64 version; /* XXX ? */
+	struct ngnfs_ino_gen ig; /* inode number and generation */
 	__u8 pers_dtype; /* ngnfs persistent directory entry type */
 	__u8 name_len; /* no null termination */
 	__u8 name[6]; /* definition pads to alignment, stored can be smaller */

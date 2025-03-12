@@ -25,8 +25,8 @@
 #include "cli/cli.h"
 
 struct debugfs_context {
+	struct ngnfs_inode_ino_gen cwd_ig;
 	struct ngnfs_fs_info *nfi;
-	u64 cwd_ino;
 	bool quit;
 	int ret;
 };
@@ -43,7 +43,7 @@ static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_dir_create(ctx->nfi, ctx->cwd_ino, 0644, argv[1], strlen(argv[1]));
+	ret = ngnfs_dir_create(ctx->nfi, &ctx->cwd_ig, 0644, argv[1], strlen(argv[1]));
 	if (ret < 0)
 		printf("create error: "ENOF"\n", ENOA(-ret));
 }
@@ -87,7 +87,7 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 
 	pos = 0;
 	while (true) {
-		ret = ngnfs_dir_readdir(ctx->nfi, ctx->cwd_ino, pos, buf, size);
+		ret = ngnfs_dir_readdir(ctx->nfi, &ctx->cwd_ig, pos, buf, size);
 		if (ret <= 0) {
 			if (ret < 0)
 				printf("readdir error: "ENOF"\n", ENOA(-ret));
@@ -96,8 +96,8 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 
 		ent = buf;
 		for (i = 0; i < ret; i++) {
-			printf("%020llu %10llu %5llu %05o %.*s\n", ent->pos, ent->ino, ent->gen,
-			       ent->dtype, ent->name_len, ent->name);
+			printf("%020llu %10llu %5llu %05o %.*s\n", ent->pos, ent->ig.ino,
+			       ent->ig.gen, ent->dtype, ent->name_len, ent->name);
 			pos = ent->pos;
 			ent = (void *)ent + ent->next_offset;
 		}
@@ -113,10 +113,11 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 
 static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 {
+	struct ngnfs_inode_ino_gen root_ig = INIT_NGNFS_ROOT_IG;
 	struct ngnfs_inode ninode;
 	int ret;
 
-	ret = ngnfs_inode_read_copy(ctx->nfi, NGNFS_ROOT_INO, &ninode, sizeof(ninode));
+	ret = ngnfs_inode_read_copy(ctx->nfi, &root_ig, &ninode, sizeof(ninode));
 
 	if (ret < 0) {
 		log("stat error: %d", ret);
@@ -132,8 +133,8 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 		       "ctime: %llu\n"
 		       "mtime: %llu\n"
 		       "crtime: %llu\n",
-		       le64_to_cpu(ninode.ino),
-		       le64_to_cpu(ninode.gen),
+		       le64_to_cpu(ninode.ig.ino),
+		       le64_to_cpu(ninode.ig.gen),
 		       le32_to_cpu(ninode.nlink),
 		       le32_to_cpu(ninode.mode),
 		       le64_to_cpu(ninode.atime_nsec),
@@ -229,7 +230,7 @@ static void debugfs_thread(struct thread *thr, void *arg)
 	qsort(commands, ARRAY_SIZE(commands), sizeof(commands[0]), compar_cmd_names);
 
 	for (;;) {
-		fprintf(stdout, "<%llu> $ ", ctx->cwd_ino);
+		fprintf(stdout, "<%llu> $ ", ctx->cwd_ig.ino);
 		fflush(stdout);
 		if (!fgets(line, LINE_SIZE, stdin))
 			break;
@@ -270,7 +271,7 @@ static int debugfs_func(int argc, char **argv)
 	struct ngnfs_fs_info nfi = INIT_NGNFS_FS_INFO;
 	struct debugfs_context ctx = {
 		.nfi = &nfi,
-		.cwd_ino = NGNFS_ROOT_INO,
+		.cwd_ig = INIT_NGNFS_ROOT_IG,
 		.quit = false,
 	};
 	struct thread thr;
