@@ -62,7 +62,8 @@ int ngnfs_inode_init(struct ngnfs_inode_txn_ref *itref, struct ngnfs_inode_ino_g
 	ngnfs_tblk_assign(tblk, ninode->ctime_nsec, ninode->atime_nsec);
 	ngnfs_tblk_assign(tblk, ninode->mtime_nsec, ninode->atime_nsec);
 	ngnfs_tblk_assign(tblk, ninode->crtime_nsec, ninode->atime_nsec);
-	ngnfs_tblk_memset(tblk, &ninode->dirents, 0, sizeof(struct ngnfs_btree_root));
+	ngnfs_tblk_memset(tblk, &ninode->dirents, 0, sizeof(ninode->dirents));
+	ngnfs_tblk_memset(tblk, &ninode->xattrs, 0, sizeof(ninode->xattrs));
 
 	return 0;
 }

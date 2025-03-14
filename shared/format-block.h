@@ -117,6 +117,7 @@ struct ngnfs_inode {
 	__le64 mtime_nsec;
 	__le64 crtime_nsec;
 	struct ngnfs_btree_root dirents;
+	struct ngnfs_btree_root xattrs;
 };
 
 #define NGNFS_ROOT_INO 1
@@ -171,5 +172,12 @@ struct ngnfs_dirent {
 #define NGNFS_DIRENT_DOT_HASH	 	0ULL
 #define NGNFS_DIRENT_DOT_DOT_HASH	1ULL
 #define NGNFS_DIRENT_MIN_HASH		2ULL
+
+struct ngnfs_xattr {
+	__le16 val_len;
+	__u8 name_len;
+	__u8 __pad[5];
+	__u8 name[];
+};
 
 #endif
