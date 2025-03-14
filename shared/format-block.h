@@ -112,11 +112,15 @@ struct ngnfs_inode {
 	__le32 mode;
 	__le32 rdev;
 	__le32 flags;
+	__le32 pad;
+	__le32 xattr_names_len;	/* total length of null-terminated xattr names */
+	__le64 xattr_creates;	/* update on each xattr create and use in key */
 	__le64 atime_nsec;
 	__le64 ctime_nsec;
 	__le64 mtime_nsec;
 	__le64 crtime_nsec;
 	struct ngnfs_btree_root dirents;
+	struct ngnfs_btree_root xattrs;
 };
 
 #define NGNFS_ROOT_INO 1
@@ -171,5 +175,34 @@ struct ngnfs_dirent {
 #define NGNFS_DIRENT_DOT_HASH	 	0ULL
 #define NGNFS_DIRENT_DOT_DOT_HASH	1ULL
 #define NGNFS_DIRENT_MIN_HASH		2ULL
+
+/*
+ * xattrs are currently implemented as btree items, whose keys are the
+ * hash of the name combined with the xattr_create_counter value in the
+ * inode, which makes the keys unique - no collisions. name is padded to
+ * alignment but will be bigger.
+ */
+struct ngnfs_xattr {
+	__le16 val_len;
+	__u8 name_len;
+	__u8 name[1];
+};
+
+/*
+ * Maximum size of the xattr struct plus non-null-terminated xattr
+ * name/value (see xattr_size()).
+ *
+ * TODO: support much larger xattrs by storing in blocks instead of
+ * btree items.
+ */
+#define NGNFS_XATTR_MAX_SIZE	NGNFS_BTREE_MAX_VAL_SIZE
+
+/*
+ * Maximum length of all null terminated xattr names per inode. This is
+ * the VFS-imposed limit for listxattr.
+ */
+#define NGNFS_XATTR_MAX_NAMES_LEN	65536
+
+#define NGNFS_XATTR_HASH_SEED		0xfadefadefadefade
 
 #endif
