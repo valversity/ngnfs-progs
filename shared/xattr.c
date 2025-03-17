@@ -367,3 +367,66 @@ int ngnfs_xattr_set(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, c
 	kfree(xattr);
 	return ret;
 }
+
+struct listxattr_args {
+	void *buf;
+	size_t size;
+	size_t used;
+};
+
+/*
+ * Copy one xattr name into the buf, followed by a null byte, unless the
+ * buf is zero size, in which case just increment the size counter.
+ */
+static int fill_listxattr_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *args)
+{
+	struct listxattr_args *la = args;
+	struct ngnfs_xattr *xattr = val;
+	size_t bytes;
+
+	bytes = xattr->name_len + 1;
+	if (la->size == 0) /* just counting the bytes, not copying them */
+		goto out;
+
+	if (bytes > (la->size - la->used))
+		return -ERANGE;
+
+	memcpy(la->buf + la->used, xattr->name, xattr->name_len);
+	memset(la->buf + la->used + xattr->name_len + 1, 0, 1);
+out:
+	la->used = la->used + xattr->name_len + 1;
+	return NGNFS_BTREE_ITER_CONTINUE;
+}
+
+/*
+ * Return a list of names of extended attributes, separated by nulls, or
+ * if the size of the buf is zero, the size that would be required to
+ * return the list.
+ */
+ssize_t ngnfs_xattr_list(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, void *buf,
+			 size_t size)
+{
+	struct ngnfs_inode_txn_ref ino;
+	struct ngnfs_transaction txn;
+	struct ngnfs_btree_key key;
+	struct listxattr_args la;
+	int ret;
+
+	la.buf = buf;
+	la.size = size;
+	la.used = 0;
+
+	ngnfs_txn_init(&txn);
+	init_xattr_key(&key, 0);
+
+	do {
+		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, ig, &ino)				?:
+		      ngnfs_btree_read_iter(nfi, &txn, &ino.ninode->xattrs, &key,
+					    NULL, NULL, fill_listxattr_rd, &la);
+
+	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+
+	ngnfs_txn_teardown(nfi, &txn);
+
+	return ret ?: la.used;
+}

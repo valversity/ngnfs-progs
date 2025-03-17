@@ -10,5 +10,7 @@ ssize_t ngnfs_xattr_get(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *i
 int ngnfs_xattr_remove(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, char *name);
 int ngnfs_xattr_set(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, char *name,
 		    void *value, size_t val_size, int flags);
+ssize_t ngnfs_xattr_list(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, void *buf,
+			 size_t size);
 
 #endif

@@ -232,6 +232,62 @@ out:
 	return;
 }
 
+static void cmd_listxattr(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename;
+	char *buf, *next;
+	u64 buf_size = 64 * 1024; /* default max name list */
+	ssize_t bytes, name_len;
+	int nr;
+	int ret;
+
+	if ((argc < 2) || (argc > 3)) {
+		printf("usage: listxattr <filename> [buf size]\n");
+		return;
+	}
+
+	filename = argv[1];
+	if (argc == 3) {
+		ret = parse_ull(&buf_size, argv[2], 0, buf_size);
+		if (ret < 0)
+			return;
+	}
+
+	buf = malloc(buf_size);
+	if (!buf) {
+		printf("malloc error");
+		return;
+	}
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("listxattr", ret);
+		goto out;
+	}
+
+	bytes = ngnfs_xattr_list(ctx->nfi, &lent.ig, buf, buf_size);
+	if (bytes < 0) {
+		print_err("listxattr", bytes);
+		goto out;
+	}
+
+	if (buf_size > 0) {
+		nr = 0;
+		for (next = buf; next < buf + bytes; next += name_len + 1) {
+			name_len = strlen(next);
+			nr++;
+			printf("%s\n", next);
+		}
+		printf("total xattrs: %d\n", nr);
+	} else {
+		printf("bytes needed to list xattrs: %ld\n", bytes);
+	}
+out:
+	free(buf);
+	return;
+}
+
 static void cmd_lookup(struct debugfs_context *ctx, int argc, char **argv)
 {
 	struct ngnfs_dir_lookup_entry lent;
@@ -559,6 +615,7 @@ static struct command {
 	{ "cd", cmd_cd, },
 	{ "create", cmd_create, },
 	{ "getxattr", cmd_getxattr, },
+	{ "listxattr", cmd_listxattr, },
 	{ "lookup", cmd_lookup, },
 	{ "mkdir", cmd_mkdir, },
 	{ "mkfs", cmd_mkfs, },
