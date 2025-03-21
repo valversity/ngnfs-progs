@@ -212,7 +212,9 @@ static void socket_recv_thread(struct thread *thr, void *arg)
 		}
 
 		iovcnt = iov_append(iov, 0, page_address(ctl_page), mdesc.ctl_size);
-		iovcnt = iov_append(iov, iovcnt, page_address(mdesc.data_page), mdesc.data_size);
+
+		if (mdesc.data_size)
+			iovcnt = iov_append(iov, iovcnt, page_address(mdesc.data_page), mdesc.data_size);
 
 		ret = whole_iovec(readv, pinf->fd, iov, iovcnt);
 		if (ret < 0)
