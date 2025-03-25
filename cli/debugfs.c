@@ -127,6 +127,7 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 	} else {
 		printf("ino: %llu\n"
 		       "gen: %llu\n"
+		       "size: %llu\n"
 		       "nlink: %u\n"
 		       "mode: %o\n"
 		       "atime: %llu\n"
@@ -135,6 +136,7 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 		       "crtime: %llu\n",
 		       le64_to_cpu(ninode.ig.ino),
 		       le64_to_cpu(ninode.ig.gen),
+		       le64_to_cpu(ninode.size),
 		       le32_to_cpu(ninode.nlink),
 		       le32_to_cpu(ninode.mode),
 		       le64_to_cpu(ninode.atime_nsec),
