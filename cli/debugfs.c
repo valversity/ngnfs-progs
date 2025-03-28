@@ -216,6 +216,10 @@ static void debugfs_thread(struct thread *thr, void *arg)
 	char **line_argv = NULL;
 	char *line = NULL;
 	int ret;
+	bool is_tty;
+
+	/* if our stdin is not a tty, we want to insert newlines after each cmd */
+	is_tty = isatty(fileno(stdin));
 
 	line = malloc(LINE_SIZE);
 	line_argv = calloc(MAX_ARGC, sizeof(line_argv[0]));
@@ -232,6 +236,9 @@ static void debugfs_thread(struct thread *thr, void *arg)
 		fflush(stdout);
 		if (!fgets(line, LINE_SIZE, stdin))
 			break;
+
+		if (!is_tty)
+			fprintf(stdout, "\n");
 
 		parse_command(ctx, line, line_argv);
 
