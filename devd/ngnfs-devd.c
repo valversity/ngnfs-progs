@@ -32,6 +32,7 @@
 #include "utask/utask.h"
 
 #include "devd/proc.h"
+#include "devd/cache-mode.h"
 
 struct devd_options {
 	char *dev_path;
@@ -92,7 +93,7 @@ int main(int argc, char **argv)
 
 	ret = utask_init(BLOCK_QUEUE_DEPTH + NET_QUEUE_DEPTH) ?:
 	      net_register_recv(proc_recv) ?:
-	      net_listen(&opts.listen_addr) ?:
+	      net_listen(&opts.listen_addr, cache_release_all) ?:
 	      block_init(opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
 	      utask_run();
 
