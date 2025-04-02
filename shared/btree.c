@@ -1101,10 +1101,8 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 				/* ind/item already 0/NULL from !bt */
 			}
 
-			if (op.delete) {
+			if (op.delete)
 				op.key = item->key;
-				op.val_size = item_val_size(trav.bt, ind);
-			}
 
 			if (op.insert || op.delete) {
 				ret = try_split_merge(nfi, txn, root_tblk, root, &trav,
