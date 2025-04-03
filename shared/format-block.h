@@ -96,6 +96,26 @@ struct ngnfs_ino_gen {
 };
 
 /*
+ * Data blocks are pointed to by a simple tree of indirect blocks rooted
+ * in a single field in the inode. The height is one greater than the
+ * level of the referenced block. It's 0 for an empty tree.
+ */
+struct ngnfs_data_root {
+	struct ngnfs_block_ref ref;
+	__u8 _pad[7];
+	__u8 height;
+};
+
+/*
+ * Indirect blocks are a simple array of block refs.
+ */
+#define NGNFS_DATA_REFS_PER_BLOCK (NGNFS_BLOCK_SIZE/sizeof(struct ngnfs_block_ref))
+
+struct ngnfs_indirect_block {
+	struct ngnfs_block_ref refs[NGNFS_DATA_REFS_PER_BLOCK];
+};
+
+/*
  * Inodes are stored in inode blocks.  Inode blocks numbers are directly
  * calculated from the inode number.  The block itself is formatted as a
  * btree block and the inodes (and other inline inode data) are stored
@@ -118,6 +138,7 @@ struct ngnfs_inode {
 	__le64 crtime_nsec;
 	struct ngnfs_btree_root dirents;
 	struct ngnfs_btree_root xattrs;
+	struct ngnfs_data_root data;
 };
 
 #define NGNFS_ROOT_INO 1

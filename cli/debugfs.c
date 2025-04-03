@@ -17,6 +17,7 @@
 #include "shared/lk/types.h"
 #include "shared/lk/xattr.h"
 
+#include "shared/data.h"
 #include "shared/dir.h"
 #include "shared/format-block.h"
 #include "shared/inode.h"
@@ -357,6 +358,61 @@ static void cmd_quit(struct debugfs_context *ctx, int argc, char **argv)
 	return;
 }
 
+static void cmd_read(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename;
+	char *buf;
+	u64 offset, buf_size;
+	ssize_t bytes;
+	int ret;
+
+	if (argc != 4) {
+		printf("usage: read <filename> <offset> <length>\n");
+		return;
+	}
+
+	filename = argv[1];
+
+	ret = strtoull_nerr(&offset, argv[2], NULL, 0);
+	if (ret < 0) {
+		print_err("parsing offset", ret);
+		return;
+	}
+
+	ret = parse_ull(&buf_size, argv[3], 0, SIZE_MAX);
+	if (ret < 0)
+		return;
+
+	buf = malloc(buf_size);
+	if (!buf) {
+		printf("malloc error");
+		return;
+	}
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("read", ret);
+		goto out;
+	}
+
+	bytes = ngnfs_data_read(ctx->nfi, &lent.ig, offset, buf, buf_size);
+	if (bytes < 0) {
+		print_err("read", ret);
+		goto out;
+	} else if (bytes == 0) {
+		printf("read: EOF\n");
+	} else if (bytes < buf_size) {
+		printf("short read: %ld of %llu bytes requested\n", bytes, buf_size);
+		goto out;
+	} else {
+		printf("%.*s\n", (int) bytes, buf);
+	}
+out:
+	free(buf);
+	return;
+}
+
 static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 {
 	struct ngnfs_readdir_entry *buf;
@@ -606,6 +662,58 @@ static void cmd_unlink(struct debugfs_context *ctx, int argc, char **argv)
 		print_err("unlink", ret);
 }
 
+static void cmd_write(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename;
+	char *buf;
+	u64 offset, buf_size;
+	ssize_t bytes;
+	int ret;
+
+	if (argc != 4) {
+		printf("usage: write <filename> <offset> <length>\n");
+		return;
+	}
+
+	filename = argv[1];
+
+	ret = strtoull_nerr(&offset, argv[2], NULL, 0);
+	if (ret < 0) {
+		print_err("parsing offset", ret);
+		return;
+	}
+
+	ret = parse_ull(&buf_size, argv[3], 0, SIZE_MAX);
+	if (ret < 0)
+		return;
+
+	buf = malloc(buf_size);
+	if (!buf) {
+		printf("malloc error");
+		return;
+	}
+	memset(buf, '.', buf_size);
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("write", ret);
+		goto out;
+	}
+
+	bytes = ngnfs_data_write(ctx->nfi, &lent.ig, offset, buf, buf_size);
+	if (bytes < 0) {
+		print_err("write", ret);
+		goto out;
+	} else if (bytes < buf_size) {
+		printf("short write: %ld of %llu bytes requested\n", bytes, buf_size);
+		goto out;
+	}
+out:
+	free(buf);
+	return;
+}
+
 static struct command {
 	char *name;
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
@@ -620,6 +728,7 @@ static struct command {
 	{ "mkdir", cmd_mkdir, },
 	{ "mkfs", cmd_mkfs, },
 	{ "quit", cmd_quit, },
+	{ "read", cmd_read, },
 	{ "readdir", cmd_readdir, },
 	{ "removexattr", cmd_removexattr, },
 	{ "rename", cmd_rename, },
@@ -628,6 +737,7 @@ static struct command {
 	{ "stat", cmd_stat, },
 	{ "sync", cmd_sync, },
 	{ "unlink", cmd_unlink, },
+	{ "write", cmd_write, },
 };
 
 static int compar_cmd_names(const void *A, const void *B)
