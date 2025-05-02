@@ -19,17 +19,26 @@
 typedef int (*ngnfs_btree_read_iter_fn_t)(struct ngnfs_btree_key *key, void *val,
 					  size_t val_size, void *arg);
 
+/*
+ * btree operations. Note that 0 should be always be a no-op.
+ */
+enum {
+	BOP_NOOP = 0,
+	BOP_INSERT,
+	BOP_DELETE,
+	BOP_REPLACE,
+	BOP_PREPARE,	/* used to pre-split/merge parent nodes */
+};
 
 /*
- * Setting both insert and delete is allowed, it overwrites the existing
- * items value with the op's value.
+ * Describes the btree operation that should be done.
  */
 struct ngnfs_btree_op {
 	struct ngnfs_btree_key key;
 	void *val;
 	size_t val_size;
-	unsigned insert:1,
-		 delete:1;
+	size_t old_size;	/* size of value to replace */
+	unsigned op;
 };
 
 /*

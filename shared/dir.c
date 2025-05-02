@@ -276,7 +276,7 @@ static int insert_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size,
 		}
 	}
 
-	op->insert = 1;
+	op->op = BOP_INSERT;
 	init_dirent_key(&op->key, da->hash);
 	op->val = &da->dent;
 	op->val_size = da->dent_size;
@@ -623,7 +623,7 @@ static int remove_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size,
 
 	memcpy(&da->dent, dent, size);
 
-	op->delete = 1;
+	op->op = BOP_DELETE;
 
 	return 0;
 }
@@ -819,16 +819,17 @@ static int replace_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size
 				return NGNFS_BTREE_ITER_CONTINUE;
 			}
 		}
+
 		/* delete existing dirent and insert new one */
-		op->delete = 1;
+		op->op = BOP_REPLACE;
 		/* only need the target's dirent, not the full name */
 		memcpy(&da->target, dent, sizeof(struct ngnfs_dirent));
 	} else {
 		/* insert dirent only */
+		op->op = BOP_INSERT;
 		init_dirent_key(&op->key, da->hash);
 	}
 
-	op->insert = 1;
 	op->val = &da->dent;
 	op->val_size = da->dent_size;
 

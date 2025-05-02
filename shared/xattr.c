@@ -181,7 +181,7 @@ static int remove_xattr_wr(struct ngnfs_btree_key *key, void *val, size_t val_si
 	if (!xattr_names_equal(xattr->name, xattr->name_len, (u8 *) xa->name, xa->name_len))
 		return NGNFS_BTREE_ITER_CONTINUE;
 
-	op->delete = 1;
+	op->op = BOP_DELETE;
 	xa->found = true;
 
 	return 0;
@@ -307,17 +307,17 @@ static int set_xattr_wr(struct ngnfs_btree_key *key, void *val, size_t val_size,
 			return -EEXIST;
 	}
 
-	/* delete old value, if any */
 	if (xattr) {
-		op->delete = 1;
+		op->op = BOP_REPLACE;
+		op->key = *key;
 		xa->replaced = true; /* for updating xattr_names_len */
+	} else {
+		op->op = BOP_INSERT;
+		update_xattr_key(&op->key, xa->hash, xa->ino);
 	}
 
-	/* insert new value with new updated key */
-	op->insert = 1;
 	op->val = xa->xattr;
 	op->val_size = xa->xattr_size;
-	update_xattr_key(&op->key, xa->hash, xa->ino);
 
 	/* replace won't return an error if nothing exists so set found */
 	xa->found = true;
