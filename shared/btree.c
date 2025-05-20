@@ -159,19 +159,24 @@ static u16 find_key_ind(struct ngnfs_btree_block *bt, struct ngnfs_btree_key *ke
 	int ind = 0;
 	int cmp;
 
+	printf("%s: bnr %llu key %llu %llu %llu\n", __func__, bt->bnr, key->k[0], key->k[1], key->k[2]);
+
 	while (start <= end) {
 		ind = (start + end) >> 1;
 		item = item_from_ind(bt, ind);
+		printf("key at ind %03d: %020llu %020llu %020llu\n", ind, item->key.k[0], item->key.k[1], item->key.k[2]);
 
 		cmp = compare_keys(key, &item->key);
-		if (cmp == 0)
+		if (cmp == 0) {
+			printf("returning ind %d\n", ind);
 			return ind;
-		else if (cmp < 0)
+		} else if (cmp < 0)
 			end = ind - 1;
 		else
 			start = ++ind;
 	}
 
+	printf("returning ind %d\n", ind);
 	return ind;
 }
 
@@ -361,8 +366,8 @@ static struct ngnfs_btree_item *replace_item(struct ngnfs_txn_block *tblk,
 	struct ngnfs_btree_item *item = item_from_ind(bt, ind);
 
 	BUG_ON(ind >= NGNFS_BTREE_MAX_ITEMS);
-	BUG_ON(le16_to_cpu(bt->tail_free) + val_bytes - old_bytes > NGNFS_BTREE_MAX_FREE);
-	BUG_ON(le16_to_cpu(bt->total_free) + val_bytes - old_bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->tail_free) - val_bytes + old_bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->total_free) - val_bytes + old_bytes > NGNFS_BTREE_MAX_FREE);
 
 	/* update total free */
 	ngnfs_tblk_le16_add_cpu(tblk, &bt->total_free, old_bytes - val_bytes);
@@ -382,7 +387,8 @@ static struct ngnfs_btree_item *replace_item(struct ngnfs_txn_block *tblk,
 
 	if (val_size) {
 		ngnfs_tblk_memcpy(tblk, &item->val[0], val, val_size);
-		ngnfs_tblk_zero_tail(tblk, &item->val[0], val_size, old_size);
+		if (val_size < old_bytes)
+			ngnfs_tblk_zero_tail(tblk, &item->val[0], val_size, old_bytes);
 	}
 
 	return item;
@@ -663,6 +669,8 @@ static int split_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	u64 bnr;
 	int ret;
 
+	printf("splitting block bnr %llu\n", trav->bt->bnr);
+
 	/* allocate new parent if we don't have one */
 	if (!trav->parent) {
 		ret = alloc_root_block(nfi, txn, root_tblk, root,
@@ -670,6 +678,7 @@ static int split_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 		if (ret < 0)
 			goto out;
 		insert_parent_ref(trav->parent_tblk, trav->parent, 0, trav->bt);
+		printf("trav bnr %llu has new parent bnr %llu\n", trav->bt->bnr, root->ref.bnr);
 	}
 
 	/* allocate and initialize new nei */
@@ -689,6 +698,7 @@ static int split_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	reset_key_range_boundary(nei_tblk, nei, trav->tblk, trav->bt);
 	insert_parent_ref(trav->parent_tblk, trav->parent, bt_ind, nei);
 
+	printf("split bnr %llu new bnr %llu\n", trav->bt->bnr, bnr);
 	/*
 	 * Continue the caller's traversal through the split nei if
 	 * we moved the key to the nei.
@@ -696,6 +706,7 @@ static int split_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	if (compare_keys(key, &nei->last) <= 0) {
 		trav->tblk = nei_tblk;
 		trav->bt = nei;
+		printf("switching trav bnr from %llu to %llu\n", trav->bt->bnr, nei->bnr);
 	}
 
 	ret = 0;
@@ -1026,6 +1037,295 @@ bool ngnfs_btree_key_is_max(struct ngnfs_btree_key *key)
 	return compare_keys(key, &max_key) == 0;
 }
 
+#define verify_printf(print, fmt, args...)	\
+	if (print) dprintf(STDOUT_FILENO, fmt"\n", ##args)
+
+__attribute__((unused))
+static void print_key(int print, struct ngnfs_btree_key *key)
+{
+	verify_printf(print, "[%020llu %020llu %020llu]",
+		      le64_to_cpu(key->k[0]), le64_to_cpu(key->k[1]), le64_to_cpu(key->k[2]));
+}
+
+/*
+ * Verify a btree block is internally consistent and consistent with the
+ * start and end key range provided by the caller (possibly from its
+ * parent):
+ *
+ * nr_items within range
+ * key start/end agrees with passed start/end
+ * item keys between key start/end
+ * item keys in order
+ * used space consistent with items lengths
+ * tail free consistent with end of last item
+ * free space is all zeroes
+ *
+ * Avoid using functions that may have BUG_ON() checking in them so that
+ * we can print out damaged btree blocks.
+ */
+__attribute__((unused))
+static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
+				  struct ngnfs_btree_block *bt, int level,
+				  struct ngnfs_btree_key *start, struct ngnfs_btree_key *end,
+				  int print)
+{
+	struct ngnfs_btree_item *item;
+	struct ngnfs_block_ref *ref;
+	struct ngnfs_btree_key prev;
+	char *reason = NULL;
+	int ooo_items;
+	int bad_items;
+	int items;
+	int ind;
+
+	verify_printf(print, "%s: verifying btree block\n", str);
+
+	if (!bt) {
+		verify_printf(print, "\tERROR: NULL btree block pointer\n");
+		return -EUCLEAN;
+	}
+
+	verify_printf(print, "%s: btree block\n==========================\n\n", str);
+	verify_printf(print,
+		      "\tbnr:\t%llu\n"
+		      "\tlevel:\t%u\n"
+		      "\tnr_items:\t%u\n"
+		      "\ttail free:\t%u\n"
+		      "\ttotal free:\t%u\n",
+		      le64_to_cpu(bt->bnr),
+		      bt->level,
+		      le16_to_cpu(bt->nr_items),
+		      le16_to_cpu(bt->tail_free),
+		      le16_to_cpu(bt->total_free));
+
+	verify_printf(print, "\tfirst:\t");
+	print_key(print, &bt->first);
+	verify_printf(print, "\n\tlast:\t");
+	print_key(print, &bt->last);
+	verify_printf(print, "\n");
+
+	if (le16_to_cpu(bt->nr_items) > NGNFS_BTREE_MAX_ITEMS) {
+		verify_printf(print, "\tERROR: nr_items %u > %lu\n",
+			      le16_to_cpu(bt->nr_items), NGNFS_BTREE_MAX_ITEMS);
+		reason = "number of times in btree block header is too large";
+		if (!print)
+			goto out;
+	}
+
+	if (compare_keys(&bt->first, start) || compare_keys(&bt->last, end)) {
+		verify_printf(print, "\tERROR: block header first/last keys inconsistent with "
+			      "expected start/end keys\n");
+		verify_printf(print, "first:\t");
+		print_key(print, &bt->first);
+		verify_printf(print, "\nstart:\t");
+		print_key(print, start);
+		verify_printf(print, "\nlast:\t");
+		print_key(print, &bt->last);
+		verify_printf(print, "\nend:\t");
+		print_key(print, end);
+		verify_printf(print, "\n");
+
+		reason = "first/last keys inconsistent with expected start/end keys";
+		if (!print)
+			goto out;
+	}
+
+	items = 0;
+	ooo_items = 0;
+	bad_items = 0;
+	prev = *start;
+
+	verify_printf(print, "\n\titems:\n\n");
+
+	for (ind = 0; ind < NGNFS_BTREE_MAX_ITEMS; ind++) {
+		/* check the item offset */
+		if (le16_to_cpu(bt->ihdrs[ind].off) +
+		    sizeof(struct ngnfs_btree_key) >= NGNFS_BLOCK_SIZE) {
+			verify_printf(print, "\t\tERROR: ihdrs[%u]: invalid offset %u\n",
+				      ind, le16_to_cpu(bt->ihdrs[ind].off));
+
+			reason = "invalid item offset";
+			bad_items++;
+			if (!print)
+				goto out;
+			continue;
+		}
+
+		/* check the item size */
+		if (le16_to_cpu(bt->ihdrs[ind].off) +
+		    le16_to_cpu(bt->ihdrs[ind].val_size) >= NGNFS_BLOCK_SIZE) {
+			verify_printf(print, "\t\tERROR: ihdrs[%u]: invalid val_size %u\n",
+			       ind, le16_to_cpu(bt->ihdrs[ind].val_size));
+
+			reason = "invalid item val_size";
+			bad_items++;
+			if (!print)
+				goto out;
+			continue;
+		}
+
+		/* safe to read the item now */
+		item = (void *)bt + le16_to_cpu(bt->ihdrs[ind].off);
+
+		if (ind < le16_to_cpu(bt->nr_items)) {
+			items++;
+			/*
+			 * If we are still under nr_items, then the key
+			 * should be strictly larger than the previous key
+			 * (unless they are both the zero key).
+			 */
+			if (!ngnfs_btree_key_is_min(&prev) &&
+			    compare_keys(&prev, &item->key) != -1) {
+				verify_printf(print, "\t\tERROR: ihdrs[%u]: key > prev key\n", ind);
+				verify_printf(print, "\t\tprev key:\t");
+				print_key(print, &prev);
+				verify_printf(print, "\t\tkey:\t\t");
+				print_key(print, &item->key);
+
+				ooo_items++;
+				reason = "keys out of order";
+				if (!print)
+					goto out;
+			}
+		} else {
+			/* should be unused/zeroed */
+			if (!ngnfs_btree_key_is_min(&item->key) ||
+			    bt->ihdrs[ind].off ||
+			    bt->ihdrs[ind].val_size) {
+				bad_items++;
+				verify_printf(print, "\t\tERROR: ihdrs[%u]: free ihdr not zeroed\n", ind);
+				verify_printf(print, "\t\tkey:\t");
+				print_key(print, &item->key);
+				verify_printf(print, " off: %u val_size %u\n", bt->ihdrs[ind].off,
+					      bt->ihdrs[ind].val_size);
+				reason = "free ihdr not zeroed";
+				if (!print)
+					goto out;
+			}
+		}
+
+		/* if not a leaf, print the child's block number */
+		if (bt->level) {
+			if (le16_to_cpu(bt->ihdrs[ind].val_size) != sizeof(struct ngnfs_block_ref)) {
+				verify_printf(print, "\t\tERROR: ihdrs[%u]: "
+					      "wrong item value size for block ref %u\n", ind,
+					      le16_to_cpu(bt->ihdrs[ind].val_size));
+				reason = "wrong item value size for block ref";
+				if (!print)
+					goto out;
+				}
+				ref = (struct ngnfs_block_ref *) item->val;
+				verify_printf(print, "\t\tihdrs[%u]: k", ind);
+				print_key(print, &item->key);
+				verify_printf(print, ": level %u child bnr %llu\n", bt->level,
+					      le64_to_cpu(ref->bnr));
+		} else {
+			verify_printf(print, "\t\tihdrs[%u]: k", ind);
+			print_key(print, &item->key);
+			verify_printf(print, ": off %u size %u\n", le16_to_cpu(bt->ihdrs[ind].off),
+				      le16_to_cpu(bt->ihdrs[ind].val_size));
+		}
+	}
+
+	if (items != le16_to_cpu(bt->nr_items)) {
+		verify_printf(print, "\tERROR: nr_items %u but counted %u\n",
+			      le16_to_cpu(bt->nr_items), items);
+		reason = "btree block header item count doesn't match ihdrs count";
+		if (!print)
+			goto out;
+	}
+out:
+	if (!reason)
+		return 0;
+
+	if (ooo_items)
+		verify_printf(print, "\tERROR: %u out of order items\n", ooo_items);
+
+	if (bad_items)
+		verify_printf(print, "\tERROR: %u bad items\n", bad_items);
+
+	verify_printf(print, "\tERROR: btree block %s bnr %llu failed verification: %s\n",
+		      str, le64_to_cpu(bt->bnr), reason);
+
+	return -EUCLEAN;
+}
+
+__attribute__((unused))
+static void print_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
+			      struct ngnfs_btree_block *bt, int level,
+			      struct ngnfs_btree_key *start, struct ngnfs_btree_key *end)
+{
+	do_verify_btree_block(nfi, txn, str, bt, level, start, end, 1);
+}
+
+/*
+ * Only print out btree structure if there's an error.
+ */
+__attribute__((unused))
+static void verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
+			       struct ngnfs_btree_block *bt, int level,
+			       struct ngnfs_btree_key *start, struct ngnfs_btree_key *end)
+{
+	int ret;
+
+	ret = do_verify_btree_block(nfi, txn, str, bt, level, start, end, 0);
+	if (ret)
+		do_verify_btree_block(nfi, txn, str, bt, level, start, end, 1);
+}
+
+/*
+ * Use a traversal block to call verify_btree_block.
+ */
+__attribute__((unused))
+static void verify_btree_trav(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
+			      struct traversal_blocks *trav, struct ngnfs_btree_key *key)
+{
+	struct ngnfs_btree_block *parent = trav->parent;
+	struct ngnfs_btree_key start;
+	struct ngnfs_btree_key end;
+	struct ngnfs_btree_item *item;
+	char *reason = NULL;
+	int level;
+	int ind;
+
+	if (!trav->bt)
+		return;
+
+	start = trav->bt->first;
+	end = trav->bt->last;
+	level = trav->bt->level;
+	if (parent) {
+		verify_btree_block(nfi, txn, str, parent, parent->level, &parent->first,
+				   &parent->last);
+
+		ind = find_key_ind(parent, key);
+		if (ind >= le16_to_cpu(parent->nr_items)) {
+			reason = "key out of parent range (greater than last key)";
+			goto out;
+		}
+		item = item_from_ind(parent, ind);
+		if (ind == 0) {
+			ngnfs_btree_key_set_min(&start);
+			end = item->key;
+		} else if (ind == le16_to_cpu(parent->nr_items)) {
+			start = item->key;
+			ngnfs_btree_key_set_max(&end);
+		} else {
+			end = item->key;
+			item = item_from_ind(parent, ind - 1);
+			start = item->key;
+			ngnfs_btree_key_inc(&start);
+		}
+	}
+
+	verify_btree_block(nfi, txn, str, trav->bt, level, &start, &end);
+out:
+	if (!reason)
+		return;
+
+	printf("ERROR: verifying btree traversal block %s failed: %s\n", str, reason);
+}
+
 /*
  * A read only traversal through the items found in a leaf block from
  * the given key.  We hold on to read access of all the parent blocks
@@ -1203,6 +1503,10 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 				/* ind/item already 0/NULL from !bt */
 			}
 
+			/* XXX want a separate txn */
+			verify_btree_trav(nfi, txn, "btree write iter pre-operation check",
+					  &trav, key);
+
 			if (op.op == BOP_DELETE) {
 				op.key = item->key;
 				op.val_size = item_val_size(trav.bt, ind);
@@ -1263,6 +1567,10 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 				ret = 0;
 				goto out;
 			}
+
+			/* XXX want a separate txn */
+			verify_btree_trav(nfi, txn, "btree write iter post-operation check",
+					  &trav, key);
 
 			/* return non-_CONTINUE after operation */
 			if (iter_ret != NGNFS_BTREE_ITER_CONTINUE) {

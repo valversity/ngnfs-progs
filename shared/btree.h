@@ -77,5 +77,4 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 			   struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
 			   struct ngnfs_btree_key *key, struct ngnfs_btree_key *last,
 			   ngnfs_btree_write_iter_fn_t iter, void *iter_arg);
-
 #endif
