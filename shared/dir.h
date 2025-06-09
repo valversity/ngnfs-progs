@@ -7,6 +7,8 @@
 
 int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
 		     char *name, size_t name_len);
+int ngnfs_dir_mkdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+		    char *name, size_t name_len);
 
 /*
  * Readdir fills the buffer with entries.  The start of the buffer must

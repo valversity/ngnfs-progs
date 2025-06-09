@@ -277,11 +277,25 @@ static int insert_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 				      &last, insert_dirent_wr, da);
 }
 
+/*
+ * Prevent creation of "." and "..", with appropriate error return
+ * codes.
+ */
+static int check_create_dots(u64 hash, mode_t mode)
+{
+	if (hash >= NGNFS_DIRENT_MIN_HASH)
+		return 0;
+
+	if (S_ISDIR(mode))
+		return -EEXIST;
+	else
+		return -EISDIR;
+}
 
 /*
  * Allocate a new inode and add a directory entry referencing it.
  */
-int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+static int do_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
 		     char *name, size_t name_len)
 {
 	struct {
@@ -291,9 +305,15 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 		struct ngnfs_inode_ino_gen parent_ig;
 		struct ngnfs_inode_ino_gen ig;
 		u64 nsec;
+		int nlink;
 		struct dirent_args da;
 	} *op;
 	int ret;
+
+	if (name_len > NGNFS_NAME_MAX) {
+		ret = -ENAMETOOLONG;
+		goto out;
+	}
 
 	op = kmalloc(sizeof(*op), GFP_NOFS);
 	if (!op) {
@@ -301,10 +321,17 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 		goto out;
 	}
 
+	if (S_ISDIR(mode)) {
+		op->nlink = 2;
+		op->parent_ig = *dir;
+	} else {
+		op->nlink = 1;
+		op->parent_ig.ino = 0;
+		op->parent_ig.gen = 0;
+	}
+
 	ngnfs_txn_init(&op->txn);
-	op->parent_ig.ino = 0;
-	op->parent_ig.gen = 0;
-	init_dirent_args(&op->da, name, name_len, mode | S_IFREG);
+	init_dirent_args(&op->da, name, name_len, mode);
 
 	do {
 		op->nsec = ktime_to_ns(ktime_get_real());
@@ -312,8 +339,9 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 
 		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir, &op->dir)			?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
+		      check_create_dots(op->da.hash, mode)					?:
 		      ngnfs_inode_alloc(nfi, &op->txn, &op->ig, &op->inode)			?:
-		      ngnfs_inode_init(&op->inode, &op->ig, 1, mode | S_IFREG, op->nsec,
+		      ngnfs_inode_init(&op->inode, &op->ig, op->nlink, mode, op->nsec,
 				       &op->parent_ig)						?:
 		      update_dirent_args(&op->da, &op->ig)					?:
 		      insert_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
@@ -325,6 +353,18 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 	kfree(op);
 out:
 	return ret;
+}
+
+int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+		     char *name, size_t name_len)
+{
+	return do_create(nfi, dir, mode | S_IFREG, name, name_len);
+}
+
+int ngnfs_dir_mkdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+		    char *name, size_t name_len)
+{
+	return do_create(nfi, dir, mode | S_IFDIR, name, name_len);
 }
 
 struct readdir_args {
