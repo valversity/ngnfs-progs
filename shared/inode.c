@@ -20,7 +20,7 @@
  */
 
 int ngnfs_inode_init(struct ngnfs_inode_txn_ref *itref, struct ngnfs_inode_ino_gen *ig, u32 nlink,
-		     umode_t mode, u64 nsec)
+		     umode_t mode, u64 nsec, struct ngnfs_inode_ino_gen *parent_ig)
 {
 	struct ngnfs_txn_block *tblk = itref->tblk;
 	struct ngnfs_inode *ninode = itref->ninode;
@@ -29,6 +29,8 @@ int ngnfs_inode_init(struct ngnfs_inode_txn_ref *itref, struct ngnfs_inode_ino_g
 	ngnfs_tblk_assign(tblk, ninode->ig.gen, cpu_to_le64(ig->gen));
 	ngnfs_tblk_assign(tblk, ninode->size, 0);
 	ngnfs_tblk_assign(tblk, ninode->version, cpu_to_le64(1));
+	ngnfs_tblk_assign(tblk, ninode->parent_ig.ino, cpu_to_le64(parent_ig->ino));
+	ngnfs_tblk_assign(tblk, ninode->parent_ig.gen, cpu_to_le64(parent_ig->gen));
 	ngnfs_tblk_assign(tblk, ninode->nlink, cpu_to_le32(nlink));
 	ngnfs_tblk_assign(tblk, ninode->uid, 0);
 	ngnfs_tblk_assign(tblk, ninode->gid, 0);

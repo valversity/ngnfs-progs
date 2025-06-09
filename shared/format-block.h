@@ -104,7 +104,8 @@ struct ngnfs_ino_gen {
 struct ngnfs_inode {
 	struct ngnfs_ino_gen ig;
 	__le64 size;
-	__le64 version;
+	__le64 version;			/* changed on file content/metadata changes */
+	struct ngnfs_ino_gen parent_ig;	/* only valid for directories */
 	__le32 nlink;
 	__le32 uid;
 	__le32 gid;
