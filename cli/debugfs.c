@@ -35,6 +35,26 @@ struct debugfs_context {
 #define LINE_SIZE (PATH_MAX * 5)
 #define MAX_ARGC ((LINE_SIZE + 1) / 2)
 
+/*
+ * Print expected errors using printf; unexpected errors using log().
+ */
+static void print_err(char *cmd, int err)
+{
+	if ((err == -ENOENT) ||
+	    (err == -EEXIST) ||
+	    (err == -EISDIR) ||
+	    (err == -ENOTDIR) ||
+	    (err == -ENAMETOOLONG) ||
+	    (err == -ENOBUFS) ||
+	    (err == -EMLINK) ||
+	    (err == -ENODATA) ||
+	    (err == -ERANGE) ||
+	    (err == -EINVAL))
+		printf("%s error: "ENOF"\n", cmd, ENOA(-err));
+	else
+		log("%s unexpected error: "ENOF, cmd, ENOA(-err));
+}
+
 static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
 {
 	int ret;
@@ -46,7 +66,7 @@ static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
 
 	ret = ngnfs_dir_create(ctx->nfi, &ctx->cwd_ig, 0644, argv[1], strlen(argv[1]));
 	if (ret < 0)
-		printf("create error: "ENOF"\n", ENOA(-ret));
+		print_err("create", ret);
 }
 
 static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
@@ -55,13 +75,13 @@ static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
 
 	ret = ngnfs_mkfs(ctx->nfi);
 	if (ret < 0) {
-		printf("mkfs error: "ENOF"\n", ENOA(-ret));
+		print_err("mkfs", ret);
 		return;
 	}
 
 	ret = ngnfs_block_sync(ctx->nfi);
 	if (ret < 0)
-		printf("final sync error: "ENOF"\n", ENOA(-ret));
+		print_err("mkfs: final sync", ret);
 }
 
 static void cmd_quit(struct debugfs_context *ctx, int argc, char **argv)
@@ -104,7 +124,7 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 		ret = ngnfs_dir_readdir(ctx->nfi, &ctx->cwd_ig, pos, buf, size);
 		if (ret <= 0) {
 			if (ret < 0)
-				printf("readdir error: "ENOF"\n", ENOA(-ret));
+				print_err("readdir", ret);
 			break;
 		}
 
@@ -134,7 +154,7 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 	ret = ngnfs_inode_read_copy(ctx->nfi, &root_ig, &ninode, sizeof(ninode));
 
 	if (ret < 0) {
-		log("stat error: %d", ret);
+		print_err("stat", ret);
 	} else if (ret < sizeof(ninode)) {
 		log("returned inode buffer size %d too small, wanted at least %zu",
 		    ret, sizeof(ninode));
@@ -170,7 +190,7 @@ static void cmd_sync(struct debugfs_context *ctx, int argc, char **argv)
 
 	ret = ngnfs_block_sync(ctx->nfi);
 	if (ret < 0)
-		printf("sync error: "ENOF"\n", ENOA(-ret));
+		print_err("sync", ret);
 }
 
 
@@ -271,7 +291,7 @@ static void debugfs_thread(struct thread *thr, void *arg)
 
 	ret = ngnfs_block_sync(ctx->nfi);
 	if (ret < 0)
-		printf("final sync error: "ENOF"\n", ENOA(-ret));
+		print_err("final sync", ret);
 out:
 	free(line);
 	free(line_argv);
