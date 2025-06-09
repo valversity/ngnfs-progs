@@ -473,6 +473,31 @@ out:
 }
 
 /*
+ * The client has been evicted from the cluster; remove all of its
+ * cache modes on all blocks.
+ */
+void cache_release_all(struct sockaddr_in *addr)
+{
+	struct cache_mode_instance *inst = &global_cache_mode_inst;
+	struct client_mode *cli;
+	struct rb_node *walk;
+	int cmp;
+
+	walk = rb_first(&inst->cli_root);
+
+	while (walk) {
+		cli = cli_container(walk);
+		walk = rb_next(walk); /* before we free it! */
+		cmp = ngnfs_compare(ntohl(addr->sin_addr.s_addr),
+				    ntohl(cli->addr.sin_addr.s_addr)) ?:
+		      ngnfs_compare(ntohs(addr->sin_port), ntohs(cli->addr.sin_port));
+
+		if (cmp == 0)
+			free_client_mode(inst, cli);
+	}
+}
+
+/*
  * Process requests for a given block without returning processing
  * errors to the caller.  There may be no recorded client modes for the
  * block (the caller can be processing an ack of the last client who was
