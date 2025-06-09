@@ -167,4 +167,9 @@ struct ngnfs_dirent {
  */
 #define NGNFS_DIRENT_HASH_MASK	(U64_MAX ^ (1ULL << 63) ^ NGNFS_DIRENT_COLL_BIT)
 
+/* reserved hash values for . and .. */
+#define NGNFS_DIRENT_DOT_HASH	 	0ULL
+#define NGNFS_DIRENT_DOT_DOT_HASH	1ULL
+#define NGNFS_DIRENT_MIN_HASH		2ULL
+
 #endif

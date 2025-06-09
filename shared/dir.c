@@ -42,9 +42,37 @@ static bool names_equal(u8 *a, size_t a_len, u8 *b, size_t b_len)
 	return a_len == b_len && memcmp(a, b, a_len) == 0;
 }
 
+/*
+ * The directory entries for . and .. are generated during lookup and
+ * readdir and are not "real" directory entries stored as dirents. For
+ * readdir to work properly, we need the position of each entry (its
+ * hash value) to be stable. We also want to generate . and .. first
+ * because it's easier than inserting them somewhere in the middle and
+ * because applications like it that way.
+ *
+ * The solution is to reserve the hash values 0 for . and 1 for .. so
+ * that we can return them first in readdir() and the positions returned
+ * by readdir are strictly ascending.
+ */
 static u64 name_hash(void *name, size_t name_len)
 {
-	return xxh64(name, name_len, NGNFS_DIRENT_HASH_SEED) & NGNFS_DIRENT_HASH_MASK;
+	char *s = name;
+	u64 hash;
+
+	if ((name_len < 3) && (name_len > 0) && s[0] == '.') {
+		if (name_len == 1)
+			return NGNFS_DIRENT_DOT_HASH;
+
+		if (s[1] == '.')
+			return NGNFS_DIRENT_DOT_DOT_HASH;
+	}
+
+	hash = xxh64(name, name_len, NGNFS_DIRENT_HASH_SEED) & NGNFS_DIRENT_HASH_MASK;
+
+	if (hash < NGNFS_DIRENT_MIN_HASH)
+		hash = NGNFS_DIRENT_MIN_HASH;
+
+	return hash;
 }
 
 /*
@@ -284,7 +312,7 @@ struct readdir_args {
 	int nr;
 };
 
-static int fill_dirent_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *args)
+static int fill_readdir_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *args)
 {
 	struct readdir_args *ra = args;
 	struct ngnfs_dirent *dent = val;
@@ -315,6 +343,45 @@ static int fill_dirent_rd(struct ngnfs_btree_key *key, void *val, size_t val_siz
 	ra->size -= aligned;
 
 	return NGNFS_BTREE_ITER_CONTINUE;
+}
+
+static int dots_and_dents_read_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+				    struct ngnfs_btree_root *root, struct ngnfs_inode_txn_ref *dir,
+				    struct ngnfs_btree_key *key, struct ngnfs_btree_key *next,
+				    struct ngnfs_btree_key *last,  ngnfs_btree_read_iter_fn_t iter,
+				    void *iter_arg)
+{
+	struct ngnfs_dirent dots;
+	struct ngnfs_btree_key tmp_key = *key;
+	u64 pos = le64_to_cpu(tmp_key.k[0]);
+	int ret;
+
+	while (pos <= NGNFS_DIRENT_DOT_DOT_HASH) {
+		if (last && pos > le64_to_cpu(last->k[0]))
+			break;
+
+		dots = (struct ngnfs_dirent) {
+			.pers_dtype = NGNFS_DT_DIR,
+			.name_len = pos == NGNFS_DIRENT_DOT_HASH ? 1 : 2,
+			.ig = pos == NGNFS_DIRENT_DOT_HASH ?
+			dir->ninode->ig : dir->ninode->parent_ig,
+			.name[0] = '.',
+			.name[1] = '.',
+		};
+
+		ret = iter(&tmp_key, &dots, offsetof(struct ngnfs_dirent, name[dots.name_len]),
+			   iter_arg);
+
+		if (ret != NGNFS_BTREE_ITER_CONTINUE)
+			goto out;
+
+		pos++;
+		tmp_key.k[0] = cpu_to_le64(pos);
+	}
+
+	ret = ngnfs_btree_read_iter(nfi, txn, root, &tmp_key, next, last, iter, iter_arg);
+out:
+	return ret;
 }
 
 /*
@@ -359,8 +426,8 @@ int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir
 
 		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, dir_ig, &dir)			?:
 		      check_ifmt(dir.ninode, S_IFDIR, -ENOTDIR)					?:
-		      ngnfs_btree_read_iter(nfi, &txn, &dir.ninode->dirents, &key,
-					    NULL, NULL, fill_dirent_rd, &ra);
+		      dots_and_dents_read_iter(nfi, &txn, &dir.ninode->dirents, &dir, &key,
+					       NULL, NULL, fill_readdir_rd, &ra);
 
 	} while (ngnfs_txn_retry(nfi, &txn, &ret));
 
