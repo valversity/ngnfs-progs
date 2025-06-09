@@ -656,8 +656,12 @@ static int merge_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	if (ret < 0)
 		goto out;
 
-	/* balance items between blocks if together they're both above threshold */
-	until_balanced = (le16_to_cpu(trav->bt->total_free) + le16_to_cpu(nei->total_free)) >
+	/*
+	 * Balance items between blocks if the result is two blocks
+	 * whose average of free space is less than the merge free
+	 * threshold, otherwise merge them.
+	 */
+	until_balanced = le16_to_cpu(trav->bt->total_free) + le16_to_cpu(nei->total_free) <
 			 (NGNFS_BTREE_MERGE_FREE_THRESH * 2);
 
 	/* expand our range so we can insert nei's items without triggering assertions */
