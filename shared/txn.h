@@ -57,17 +57,16 @@ do {								\
 } while (0)
 
 /*
- * Given a (buf) buffer of (total) size, zero the tail bytes	\
- * after (head) initial bytes.					\
- * skipping (head) initial bytes.
+ * Given a (buf) buffer of (total) size, zero the tail bytes
+ * after (head) initial bytes, skipping (head) initial bytes.
  */
 #define ngnfs_tblk_zero_tail(tblk, buf, head, total)		\
 do {								\
 	__typeof__(head) head_ = (head);			\
-	__typeof__(head) tail_ = (total) - head_;		\
+	__typeof__(total) tail_ = (total) - head_;		\
 								\
-	if (tail_ > 0)						\
-		ngnfs_tblk_memset((tblk), (void *)(buf) + head_, 0, tail_); \
+	BUG_ON(head > total);					\
+	ngnfs_tblk_memset((tblk), (void *)(buf) + head_, 0, tail_);	\
 } while (0)
 
 /*
