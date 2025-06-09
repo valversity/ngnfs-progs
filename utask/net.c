@@ -63,6 +63,8 @@ struct net_socket {
 	struct utask *connect_tsk;
 	struct utask *send_tsk;
 	struct utask *recv_tsk;
+
+	net_close_fn_t close_fn;
 };
 
 /*
@@ -146,6 +148,9 @@ static void free_sock(struct net_instance *inst, struct net_socket *sock)
 
 	list_for_each_entry_safe(ent, tmp, &sock->send_queue, head)
 		free_ent(ent);
+
+	if (sock->close_fn)
+		sock->close_fn(&sock->addr);
 
 	if (!RB_EMPTY_NODE(&sock->node))
 		rb_erase(&sock->node, &inst->peer_root);
@@ -493,6 +498,7 @@ static void accept_utask(void *data)
 
 		accepted->addr = addr;
 		accepted->fd = fd;
+		accepted->close_fn = sock->close_fn;
 
 		ret = utask_create(send_utask, accepted, &accepted->send_tsk) ?:
 		      utask_create(recv_utask, accepted, &accepted->recv_tsk);
@@ -511,7 +517,7 @@ out:
  * accepting new connected sockets on the listening socket.  This
  * doesn't need to be called from a utask.
  */
-int net_listen(struct sockaddr_in *addr)
+int net_listen(struct sockaddr_in *addr, net_close_fn_t close_fn)
 {
 	struct net_instance *inst = &global_net_inst;
 	struct net_socket *sock = NULL;
@@ -550,6 +556,7 @@ int net_listen(struct sockaddr_in *addr)
 		goto out;
 	}
 
+	sock->close_fn = close_fn;
 	ret = utask_create(accept_utask, sock, &sock->accept_tsk);
 	if (ret < 0) {
 		destroy_sock(inst, sock);

@@ -34,6 +34,7 @@
 
 #include "devd/bstore.h"
 #include "devd/proc.h"
+#include "devd/cache-mode.h"
 
 struct devd_options {
 	char *dev_path;
@@ -117,7 +118,7 @@ static void main_utask(void *data)
 	      bstore_init() ?:
 	      net_init() ?:
 	      net_register_recv(proc_recv) ?:
-	      net_listen(&dm->opts.listen_addr) ?:
+	      net_listen(&dm->opts.listen_addr, cache_release_all) ?:
 	      utask_wait_event_task(utask_am_canceled());
 
 	net_exit();
