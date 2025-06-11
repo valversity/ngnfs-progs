@@ -17,6 +17,7 @@
 #include "shared/lk/types.h"
 #include "shared/lk/xattr.h"
 
+#include "shared/btree.h"
 #include "shared/data.h"
 #include "shared/dir.h"
 #include "shared/format-block.h"
@@ -153,6 +154,76 @@ static void cmd_brename(struct debugfs_context *ctx, int argc, char **argv)
 			return;
 		}
 	}
+}
+
+static void cmd_btree_info(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_inode_ino_gen ig = ctx->cwd_ig;
+	struct ngnfs_dir_lookup_entry lent;
+	struct ngnfs_inode ninode;
+	char *name;
+	int ret;
+
+	if (argc > 2) {
+		printf("usage: btree_info [filename]\n");
+		return;
+	}
+
+	if (argc == 2) {
+		name = argv[1];
+		ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
+		if (ret < 0) {
+			print_err("btree_info", ret);
+			return;
+		}
+		ig = lent.ig;
+	}
+
+	ret = ngnfs_inode_read_copy(ctx->nfi, &ig, &ninode, sizeof(ninode));
+
+	if (ret < 0) {
+		print_err("btree_info", ret);
+	} else if (ret < sizeof(ninode)) {
+		log("returned inode buffer size %d too small, wanted at least %zu",
+		    ret, sizeof(ninode));
+	} else {
+		if (lent.dtype == DT_DIR) {
+			printf("dirent btree bnr: %llu\n"
+			       "dirent btree height: %u\n",
+			       le64_to_cpu(ninode.dirents.ref.bnr),
+			       ninode.dirents.height);
+		}
+
+		printf("xattr btree bnr: %llu\n"
+		       "xattr btree height: %u\n",
+		       le64_to_cpu(ninode.xattrs.ref.bnr),
+		       ninode.xattrs.height);
+	}
+}
+
+static void cmd_btree_pb(struct debugfs_context *ctx, int argc, char **argv)
+{
+	u64 bnr;
+	int ret;
+
+	if (argc != 2) {
+		printf("usage: btree_pb <bnr>\n");
+		return;
+	}
+
+	ret = strtoull_nerr(&bnr, argv[1], NULL, 0);
+	if (ret < 0) {
+		print_err("parsing block number", ret);
+		return;
+	}
+
+	ret = ngnfs_print_btree_block(ctx->nfi, bnr, "debugfs");
+	if (ret < 0) {
+		print_err("ngnfs_print_btree_block", ret);
+		return;
+	}
+
+	return;
 }
 
 static void cmd_cd(struct debugfs_context *ctx, int argc, char **argv)
@@ -782,6 +853,8 @@ static struct command {
 } commands[] = {
 	{ "bcreate", cmd_bcreate, },
 	{ "brename", cmd_brename, },
+	{ "btree_info", cmd_btree_info, },
+	{ "btree_pb", cmd_btree_pb, },
 	{ "cd", cmd_cd, },
 	{ "create", cmd_create, },
 	{ "getxattr", cmd_getxattr, },

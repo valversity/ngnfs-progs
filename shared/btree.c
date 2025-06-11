@@ -168,6 +168,486 @@ static u16 find_key_ind(struct ngnfs_btree_block *bt, struct ngnfs_btree_key *ke
 	return ind;
 }
 
+static int cmp_ihdr_off(const void *A, const void *B, const void *priv)
+{
+	const struct ngnfs_btree_block *bt = priv;
+	const struct ngnfs_btree_item_header *a = &bt->ihdrs[*(u16 *)A];
+	const struct ngnfs_btree_item_header *b = &bt->ihdrs[*(u16 *)B];
+
+	return (int)le16_to_cpu(a->off) - (int)le16_to_cpu(b->off);
+}
+
+#define verify_printf(print, fmt, args...)	\
+	if (print) dprintf(STDOUT_FILENO, fmt, ##args)
+
+static void print_key(int print, struct ngnfs_btree_key *key)
+{
+	verify_printf(print, "[%020llu %020llu %020llu]",
+		      le64_to_cpu(key->k[0]), le64_to_cpu(key->k[1]), le64_to_cpu(key->k[2]));
+}
+
+/*
+ * Verify a btree block is internally consistent. If it is not, it
+ * returns -EUCLEAN. May also return -ENOMEM.
+ *
+ * Avoid using functions that may have BUG_ON() checking in them so that
+ * we can print out damaged btree blocks without crashing.
+ */
+static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+				 char *str, struct ngnfs_btree_block *bt, int print)
+{
+	struct ngnfs_btree_item *item;
+	struct ngnfs_block_ref *ref;
+	struct ngnfs_btree_key *prev;
+	u16 *inds = NULL;
+	u16 val_size, val_bytes;
+	u16 off, prev_end;
+	u16 item_bytes;
+	u16 ini_items;
+	u16 unz_items;
+	u16 uni_items;
+	u16 big_items;
+	u16 off_items;
+	u16 oor_items;
+	u16 ooo_items;
+	u16 nr_items;
+	u16 ind;
+	u16 i, j;
+	u8 c;
+	int ret;
+
+	ret = 0;
+
+	if (!bt) {
+		verify_printf(print, "verify btree block %s: ERROR: NULL btree block pointer\n",
+			      str);
+		return -EUCLEAN;
+	}
+
+	verify_printf(print, "\n%s: verifying btree block\n\n", str);
+	verify_printf(print,
+		      "bnr:\t\t%llu\n"
+		      "level:\t\t%u\n"
+		      "nr_items:\t%u\n"
+		      "tail free:\t%u\n"
+		      "total free:\t%u\n",
+		      le64_to_cpu(bt->bnr),
+		      bt->level,
+		      le16_to_cpu(bt->nr_items),
+		      le16_to_cpu(bt->tail_free),
+		      le16_to_cpu(bt->total_free));
+
+	verify_printf(print, "bt->first:\t");
+	print_key(print, &bt->first);
+	verify_printf(print, "\nbt->last:\t");
+	print_key(print, &bt->last);
+	verify_printf(print, "\n\n");
+
+	nr_items = le16_to_cpu(bt->nr_items);
+
+	if (nr_items > NGNFS_BTREE_MAX_ITEMS) {
+		verify_printf(print, "ERROR: nr_items %u > %lu\n",
+			      nr_items, NGNFS_BTREE_MAX_ITEMS);
+		ret = -EUCLEAN;
+		if (!print)
+			goto out;
+	}
+
+	ini_items = 0;
+	unz_items = 0;
+	uni_items = 0;
+	big_items = 0;
+	off_items = 0;
+	oor_items = 0;
+	ooo_items = 0;
+	prev = NULL;
+
+	for (ind = 0; ind < NGNFS_BTREE_MAX_ITEMS; ind++) {
+		off = le16_to_cpu(bt->ihdrs[ind].off);
+		val_size = le16_to_cpu(bt->ihdrs[ind].val_size);
+		item_bytes = aligned_item_size(val_size);
+
+		/* check that invalid item headers are zeroed */
+		if (ind >= nr_items) {
+			if (off || val_size) {
+				unz_items++;
+				verify_printf(print, "ERROR: ihdrs[%3u]: free ihdr not zeroed:"
+					      " off %u val_size %u\n", ind, off, val_size);
+				ret = -EUCLEAN;
+				if (!print)
+					goto out;
+			}
+			continue;
+		}
+
+		/* check that item is initialized */
+		if (off == 0 && val_size == 0) {
+			verify_printf(print, "ERROR: ihdrs[%3u]: marked as in use but has zero "
+				      "off and size (nr_items %u wrong?)\n", ind, nr_items);
+			uni_items++;
+			ret = -EUCLEAN;
+			if (!print)
+				goto out;
+			continue;
+		}
+
+		ini_items++;
+
+		/* check the item offset */
+		if (off < NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE ||
+		    off + sizeof(struct ngnfs_btree_key) > NGNFS_BLOCK_SIZE) {
+			verify_printf(print, "ERROR: ihdrs[%3u]: invalid offset %u\n", ind, off);
+			off_items++;
+			ret = -EUCLEAN;
+			if (!print)
+				goto out;
+			continue;
+		}
+
+		/* check the item size */
+		if (off + item_bytes > NGNFS_BLOCK_SIZE) {
+			verify_printf(print, "ERROR: ihdrs[%3u]: item val_size too big: %u "
+				      "(%u aligned)\n", ind, val_size, item_bytes);
+			big_items++;
+			ret = -EUCLEAN;
+			if (!print)
+				goto out;
+			continue;
+		}
+
+		/* safe to read the item now */
+		item = (void *)bt + off;
+
+		/* check range and order of keys */
+		if (compare_keys(&bt->first, &item->key) > 0 ||
+		    compare_keys(&item->key, &bt->last) > 0) {
+			verify_printf(print, "ERROR: ihdrs[%3u]: key out of range\n", ind);
+			verify_printf(print, "bt->first key:\t");
+			print_key(print, &bt->first);
+			verify_printf(print, "\nkey:\t");
+			print_key(print, &item->key);
+			verify_printf(print, "\nbt->last key:\t");
+			print_key(print, &bt->last);
+			verify_printf(print, "\n");
+
+			oor_items++;
+			ret = -EUCLEAN;
+			if (!print)
+				goto out;
+
+		} else if (prev && compare_keys(prev, &item->key) != -1) {
+			verify_printf(print, "ERROR: ihdrs[%3u]: key <= prev key\n", ind);
+			verify_printf(print, "prev key:\t");
+			print_key(print, prev);
+			verify_printf(print, "\nkey:\t");
+			print_key(print, &item->key);
+			verify_printf(print, "\n");
+
+			ooo_items++;
+			ret = -EUCLEAN;
+			if (!print)
+				goto out;
+		}
+
+		prev = &item->key;
+
+		/* if not a leaf, print the child's block number */
+		if (bt->level) {
+			ref = (struct ngnfs_block_ref *) item->val;
+
+			if (val_size != sizeof(struct ngnfs_block_ref)) {
+				verify_printf(print, "ERROR: ihdrs[%3u]: "
+					      "level %u wrong item value size for block ref %u\n",
+					      ind, bt->level, val_size);
+				ret = -EUCLEAN;
+				if (!print)
+					goto out;
+
+			} else if (ref->bnr == 0) {
+				verify_printf(print, "ERROR: ihdrs[%3u]: "
+					      "level %u block ref has invalid bnr %llu\n",
+					      ind, bt->level, ref->bnr);
+				ret = -EUCLEAN;
+				if (!print)
+					goto out;
+
+			} else {
+				verify_printf(print, "ihdrs[%3u]: key\t", ind);
+				print_key(print, &item->key);
+				verify_printf(print, " lvl %u ref bnr %llu\n", bt->level,
+					      le64_to_cpu(ref->bnr));
+			}
+		} else {
+			verify_printf(print, "ihdrs[%3u]: key\t", ind);
+			print_key(print, &item->key);
+			verify_printf(print, " off %4u size %4u\n", off, val_size);
+		}
+	}
+
+	if (ini_items != nr_items) {
+		verify_printf(print, "ERROR: bt->nr_items = %u but counted %u initialized items\n",
+			      nr_items, ini_items);
+		ret = -EUCLEAN;
+		if (!print)
+			goto out;
+	}
+
+	/* check that the item values don't overlap and have zeroes between */
+	inds = kmalloc_array(nr_items, sizeof(inds[0]), GFP_NOFS);
+	if (!inds) {
+		verify_printf(print, "ERROR: couldn't allocate memory\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	for (i = 0; i < nr_items; i++)
+		inds[i] = i;
+
+	sort_r(inds, nr_items, sizeof(inds[0]), cmp_ihdr_off, NULL, bt);
+
+	prev_end = NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE;
+
+	for (i = 0; i < nr_items; i++) {
+		ind = inds[i];
+		item = item_from_ind(bt, ind);
+		off = le16_to_cpu(bt->ihdrs[ind].off);
+		val_size = le16_to_cpu(bt->ihdrs[ind].val_size);
+		val_bytes = ALIGN(val_size, NGNFS_BTREE_ITEM_ALIGN);
+		item_bytes = aligned_item_size(val_size);
+
+		if (off < prev_end) {
+			if (off == 0) {
+				verify_printf(print, "ERROR: ihdrs[%3u].off is zero, ignoring\n",
+					      ind);
+				ret = -EUCLEAN;
+				if (!print)
+					goto out;
+
+			} else if (off < NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE) {
+				verify_printf(print, "ERROR: ihdrs[%3u].off %4u overlaps btree "
+					      "block header ending at %lu\n", ind, off,
+					      NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE);
+				ret = -EUCLEAN;
+				if (!print)
+					goto out;
+
+			} else {
+				verify_printf(print, "ERROR: ihdrs[%3u].off %4u overlaps "
+					      "previous item value(s) ending %4u\n",
+					      ind, off, prev_end);
+				ret = -EUCLEAN;
+				if (!print)
+					goto out;
+			}
+		} else {
+			prev_end = off + item_bytes;
+		}
+
+		/* check that the item tail is zeroed */
+		for (j = val_size; j < val_bytes; j++) {
+			c = item->val[j];
+			if (c != 0) {
+				verify_printf(print, "ERROR: ihdrs[%3u] tail not zeroed: "
+					      "byte %u = %0x\n", ind, j - val_size, c);
+				ret = -EUCLEAN;
+				if (!print)
+					goto out;
+			}
+		}
+
+		/* check that everything between this and previous item is zeroed */
+		for (j = prev_end; j < off; j++) {
+			c = *((char *)((void *)bt + j));
+			if (c == 0)
+				continue;
+
+			verify_printf(print, "ERROR: non-zero byte %0x at offset %u "
+				      "between item[%u] offset %u ", c, j, ind, off);
+			if (prev_end == NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE) {
+				verify_printf(print, "and beginning of values %lu\n",
+					      NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE);
+			} else {
+				verify_printf(print, "and end of previous item %u offset %u\n",
+					      inds[ind - 1],
+					      le16_to_cpu(bt->ihdrs[inds[ind - 1]].off) +
+					      le16_to_cpu(bt->ihdrs[inds[ind - 1]].val_size));
+			}
+
+			ret = -EUCLEAN;
+			if (!print)
+				goto out;
+			break;
+		}
+	}
+
+	/* check that end of block is zeroed */
+	for (j = prev_end; j < NGNFS_BLOCK_SIZE; j++) {
+		c = *((char *)((void *)bt + j));
+		if (c == 0)
+			continue;
+
+		verify_printf(print, "ERROR: non-zero byte %0x at offset %u after end of data\n",
+			      c, j);
+
+		ret = -EUCLEAN;
+		if (!print)
+			goto out;
+		break;
+	}
+
+out:
+	kfree(inds);
+
+	verify_printf(print, "\n");
+
+	if (ret == 0 || ret == -ENOMEM)
+		return ret;
+
+	verify_printf(print,
+		      "\t%4u items in use in block header\n"
+		      "\t%4u initialized items\n"
+		      "\t%4u unzeroed items\n"
+		      "\t%4u uninitialized items\n"
+		      "\t%4u items with bad offset\n"
+		      "\t%4u too big items\n"
+		      "\t%4u out of range items\n"
+		      "\t%4u out of order items\n",
+		      nr_items,
+		      ini_items,
+		      unz_items,
+		      uni_items,
+		      off_items,
+		      big_items,
+		      oor_items,
+		      ooo_items);
+
+	verify_printf(print, "\tERROR: btree block %s bnr %llu failed verification\n\n",
+		      str, le64_to_cpu(bt->bnr));
+
+	return ret;
+}
+
+static void print_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
+			      struct ngnfs_btree_block *bt)
+{
+	do_verify_btree_block(nfi, txn, str, bt, 1);
+}
+
+/*
+ * Verify the btree structure, but only print it out if there's an
+ * error. Returns the last error encountered.
+ */
+static int verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
+			      struct ngnfs_btree_block *bt)
+{
+	int ret;
+
+	ret = do_verify_btree_block(nfi, txn, str, bt, 0);
+	if (ret)
+		ret = do_verify_btree_block(nfi, txn, str, bt, 1);
+
+	return ret;
+}
+
+/*
+ * Verify a parent/child set of btree blocks and the relationship
+ * between their keys. @key is in the range of the child block. @parent
+ * may be null. If @bt is null, it returns without checking anything.
+ * Returns -EUCLEAN if there is an inconsistency in the btree blocks.
+ * May also return -ENOMEM.
+ */
+__unused
+static int verify_btree_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+				     char *str, struct ngnfs_btree_block *bt,
+				     struct ngnfs_btree_block *parent, struct ngnfs_btree_key *key)
+{
+	struct ngnfs_btree_key start;
+	struct ngnfs_btree_key end;
+	struct ngnfs_btree_item *item;
+	int ind;
+	int ret, parent_ret;
+
+	if (!bt)
+		return 0;
+
+	if (parent) {
+		parent_ret = verify_btree_block(nfi, txn, str, parent);
+
+		/* get expected first/last keys of child from parent */
+		ind = find_key_ind(parent, key);
+
+		if (ind >= le16_to_cpu(parent->nr_items)) {
+			verify_printf(1, "ERROR: key >= parent's last key\n");
+			verify_printf(1, "key:\t");
+			print_key(1, key);
+			verify_printf(1, "\nlast:\t");
+			print_key(1, &parent->last);
+			verify_printf(1, "\n");
+			parent_ret = -EUCLEAN;
+			goto out;
+		}
+
+		item = item_from_ind(parent, ind);
+
+		if (ind == 0) {
+			ngnfs_btree_key_set_min(&start);
+			end = item->key;
+
+		} else if (ind == le16_to_cpu(parent->nr_items)) {
+			start = item->key;
+			ngnfs_btree_key_set_max(&end);
+
+		} else {
+			end = item->key;
+			item = item_from_ind(parent, ind - 1);
+			start = item->key;
+			ngnfs_btree_key_inc(&start);
+		}
+
+		if (compare_keys(&bt->first, &start) || compare_keys(&bt->last, &end)) {
+			verify_printf(1, "\tERROR: parent's start/end keys inconsistent with "
+			      "child block's first/last keys\n");
+			verify_printf(1, "first:\t");
+			print_key(1, &bt->first);
+			verify_printf(1, "\nstart:\t");
+			print_key(1, &start);
+			verify_printf(1, "\nlast:\t");
+			print_key(1, &bt->last);
+			verify_printf(1, "\nend:\t");
+			print_key(1, &end);
+			verify_printf(1, "\n");
+			parent_ret = -EUCLEAN;
+			goto out;
+		}
+	} else {
+		parent_ret = 0;
+	}
+out:
+	ret = verify_btree_block(nfi, txn, str, bt);
+
+	return parent_ret ?: ret;
+}
+
+int ngnfs_print_btree_block(struct ngnfs_fs_info *nfi, u64 bnr, char *str)
+{
+	struct ngnfs_transaction txn;
+	struct ngnfs_btree_block *bt;
+	int ret;
+
+	ngnfs_txn_init(&txn);
+
+	do {
+		ret = ngnfs_txn_get_block(nfi, &txn, bnr, NBF_READ, NULL, (void **)&bt);
+		if (ret == 0)
+		      print_btree_block(nfi, &txn, str, bt);
+
+	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+
+	ngnfs_txn_teardown(nfi, &txn);
+
+	return ret;
+}
+
 /*
  * True if there's room in the block for an insertion or replacement,
  * just not contiguously available at the tail of the block. The caller
@@ -388,15 +868,6 @@ static struct ngnfs_btree_item *replace_item(struct ngnfs_txn_block *tblk,
 	ngnfs_tblk_assign(tblk, bt->ihdrs[ind].val_size, cpu_to_le16(val_size));
 
 	return item;
-}
-
-static int cmp_ihdr_off(const void *A, const void *B, const void *priv)
-{
-	const struct ngnfs_btree_block *bt = priv;
-	const struct ngnfs_btree_item_header *a = &bt->ihdrs[*(u16 *)A];
-	const struct ngnfs_btree_item_header *b = &bt->ihdrs[*(u16 *)B];
-
-	return (int)le16_to_cpu(a->off) - (int)le16_to_cpu(b->off);
 }
 
 /*

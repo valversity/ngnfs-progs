@@ -86,4 +86,6 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 			   struct ngnfs_btree_key *key, struct ngnfs_btree_key *last,
 			   ngnfs_btree_write_iter_fn_t iter, void *iter_arg);
 
+int ngnfs_print_btree_block(struct ngnfs_fs_info *nfi, u64 bnr, char *str);
+
 #endif
