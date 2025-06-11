@@ -13,6 +13,9 @@ int ngnfs_dir_unlink(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 		     size_t name_len);
 int ngnfs_dir_rmdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, char *name,
 		    size_t name_len);
+int ngnfs_dir_rename(struct ngnfs_fs_info *nfi,
+		     struct ngnfs_inode_ino_gen *src_dir_ig, char *src_name, size_t src_name_len,
+		     struct ngnfs_inode_ino_gen *dst_dir_ig, char *dst_name, size_t dst_name_len);
 
 /*
  * Readdir fills the buffer with entries.  The start of the buffer must

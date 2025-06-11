@@ -71,11 +71,15 @@ static u64 name_hash(void *name, size_t name_len)
 /*
  * These large dirent structs can fit a full sized name so that we can
  * copy in and out any dirent as we work with them.
+ *
+ * When a rename replaces a target dirent, it is copied into the target
+ * dirent of the destination dirent_args and the found flag is set.
  */
 struct dirent_args {
 	u64 hash;
 	size_t dent_size;
 	bool found;
+	struct ngnfs_dirent target;
 
 	struct ngnfs_dirent dent;
 	u8 __max_name_storage[NGNFS_NAME_MAX - sizeof_field(struct ngnfs_dirent, name)];
@@ -158,6 +162,7 @@ static void reset_dirent_args(struct dirent_args *da)
 	da->found = 0;
 	da->dent.ig.ino = cpu_to_le64(0);
 	da->dent.ig.gen = cpu_to_le64(0);
+	memset(&da->target, 0, sizeof(da->target));
 }
 
 /*
@@ -739,4 +744,242 @@ int ngnfs_dir_rmdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, 
 		    size_t name_len)
 {
 	return do_unlink(nfi, dir, name, name_len, 0);
+}
+
+/*
+ * To prevent loops when renaming a directory, we refuse to rename a
+ * source directory into one of its children. Check by walking up the
+ * path starting from the dst parent directory and comparing each
+ * directory to the src until we get to the root inode. On entry to this
+ * function, src_da is a directory, and if a target exists, it is an
+ * empty directory.
+ */
+static int check_ancestors(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+			   struct ngnfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
+			   struct ngnfs_inode_txn_ref *dst_dir)
+{
+	struct ngnfs_inode_txn_ref walk;
+	struct ngnfs_inode_ino_gen ig;
+	int ret;
+
+	/* common case: parent dirs the same, therefore no loop */
+	if ((src_dir->ninode->ig.ino == dst_dir->ninode->ig.ino) &&
+	    (src_dir->ninode->ig.gen == dst_dir->ninode->ig.gen))
+		return 0;
+
+	/* the root inode can never be renamed */
+	if (le64_to_cpu(src_da->dent.ig.ino) == NGNFS_ROOT_INO)
+		return -ELOOP;
+
+	/* walk up from dst_dir, looking for src_da */
+	walk = *dst_dir;
+	ig.ino = le64_to_cpu(walk.ninode->ig.ino);
+	ig.gen = le64_to_cpu(walk.ninode->ig.gen);
+
+	while (ig.ino != NGNFS_ROOT_INO) {
+		if (igs_equal(&ig, &src_da->dent.ig)) {
+			ret = -ELOOP;
+			goto out;
+		}
+
+		ig.ino = le64_to_cpu(walk.ninode->parent_ig.ino);
+		ig.gen = le64_to_cpu(walk.ninode->parent_ig.gen);
+
+		ret = ngnfs_inode_get(nfi, txn, NBF_READ, &ig, &walk);
+		if (ret < 0)
+			goto out;
+	}
+
+	ret = 0;
+out:
+	return ret;
+}
+
+/*
+ * Insert a new dirent into dir, replacing any existing dirent and
+ * saving it in the target field of dirent_args. Checks for whether
+ * replacing the target dirent is allowed are done after this.
+ */
+static int replace_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size, void *arg,
+			     struct ngnfs_btree_op *op)
+{
+	struct ngnfs_dirent *dent = val;
+	struct dirent_args *da = arg;
+
+	if (dent) {
+		/* check for colliding hash, if so, retry one more time */
+		if (!names_equal(dent->name, dent->name_len, da->dent.name, da->dent.name_len)) {
+			if (da->hash == le64_to_cpu(key->k[0])) {
+				if (da->hash & NGNFS_DIRENT_COLL_BIT)
+					return -ENOSPC;
+				da->hash |= NGNFS_DIRENT_COLL_BIT;
+				return NGNFS_BTREE_ITER_CONTINUE;
+			}
+		}
+
+		/* delete existing dirent and insert new one */
+		op->op = BOP_REPLACE;
+		da->found = 1;
+		memcpy(&da->target, dent, sizeof(da->target));
+
+	} else {
+		op->op = BOP_INSERT;
+		init_dirent_key(&op->key, da->hash);
+	}
+
+	op->val = &da->dent;
+	op->val_size = da->dent_size;
+
+	return 0;
+}
+
+static int replace_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+			  struct dirent_args *src_da, struct ngnfs_inode_txn_ref *dir,
+			  struct dirent_args *dst_da)
+{
+	struct ngnfs_btree_key key;
+	struct ngnfs_btree_key last;
+
+	init_dirent_key(&key, dst_da->hash);
+	init_dirent_key(&last, dst_da->hash | NGNFS_DIRENT_COLL_BIT);
+
+	dst_da->dent.ig = src_da->dent.ig;
+	dst_da->dent.pers_dtype = src_da->dent.pers_dtype;
+
+	return ngnfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key, &last,
+				      replace_dirent_wr, dst_da);
+}
+
+/*
+ * Check a rename's source, destination, and target (if any) dirents for
+ * problems that can't be caught during the individual dirent
+ * remove/insert/replace operations.
+ */
+static int check_rename(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+			struct ngnfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
+			struct ngnfs_inode_txn_ref *dst_dir, struct dirent_args *dst_da)
+{
+	int ret;
+
+	/* can't rename a dirent over itself */
+	if (igs_equal(&src_dir->ninode->ig, &dst_dir->ninode->ig) &&
+	    names_equal(src_da->dent.name, src_da->dent.name_len,
+			dst_da->dent.name, dst_da->dent.name_len)) {
+		ret = -EEXIST;
+		goto out;
+	}
+
+	/*
+	 * If source is a non-directory, the only possible problem is if
+	 * there is a target and it is a directory.
+	 */
+	if (src_da->dent.pers_dtype != NGNFS_DT_DIR) {
+		if (dst_da->found && dst_da->target.pers_dtype == NGNFS_DT_DIR)
+			ret = -EISDIR;
+		else
+			ret = 0;
+		goto out;
+	}
+
+	/*
+	 * Source is a directory. If there is a target and it is not a
+	 * directory, fail. If the target is a directory and it is not
+	 * empty, also fail.
+	 */
+	if (dst_da->found) {
+		if (dst_da->target.pers_dtype != NGNFS_DT_DIR) {
+			ret = -ENOTDIR;
+			goto out;
+		}
+
+		ret = check_empty_dir(nfi, txn, &dst_da->target.ig);
+		if (ret < 0)
+			goto out;
+	}
+
+	/* directory loop possible, check relationship between src and dst dir */
+	ret = check_ancestors(nfi, txn, src_dir, src_da, dst_dir);
+out:
+	return ret;
+}
+
+/*
+ * Update the size and nlink of the source and destination directories
+ * of a rename.
+ */
+static int rename_update_inodes(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+				struct ngnfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
+				struct ngnfs_inode_txn_ref *dst_dir, struct dirent_args *dst_da)
+{
+	int ret;
+
+	ret = update_dir(src_dir->tblk, src_dir->ninode, &src_da->dent, -1);
+	if (ret < 0)
+		goto out;
+
+	/*
+	 * If we replaced a dirent of the same name, then the dst parent
+	 * dir's size stays the same. The dst parent dir's nlink also
+	 * stays the same because we can only replace a directory with
+	 * another directory, and a non-dir with a non-dir.
+	 */
+
+	if (dst_da->found)
+		goto out;
+
+	ret = update_dir(dst_dir->tblk, dst_dir->ninode, &dst_da->dent, 1);
+	if (ret < 0)
+		goto out;
+out:
+	return ret;
+}
+
+int ngnfs_dir_rename(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *src_dir_ig,
+		     char *src_name, size_t src_name_len, struct ngnfs_inode_ino_gen *dst_dir_ig,
+		     char *dst_name, size_t dst_name_len)
+{
+	struct {
+		struct ngnfs_inode_txn_ref src_dir, dst_dir;
+		struct ngnfs_transaction txn;
+		struct dirent_args src_da, dst_da;
+	} *op;
+	int ret;
+
+	if ((src_name_len > NGNFS_NAME_MAX) || (dst_name_len > NGNFS_NAME_MAX)) {
+		ret = -ENAMETOOLONG;
+		goto out;
+	}
+
+	op = kmalloc(sizeof(*op), GFP_NOFS);
+	if (!op) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ngnfs_txn_init(&op->txn);
+	init_dirent_args(&op->src_da, src_name, src_name_len, 0);
+	init_dirent_args(&op->dst_da, dst_name, dst_name_len, 0);
+
+	do {
+		reset_dirent_args(&op->src_da);
+		reset_dirent_args(&op->dst_da);
+
+		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, src_dir_ig, &op->src_dir)	?:
+		      check_ifmt(op->src_dir.ninode, S_IFDIR, -ENOTDIR)				?:
+		      remove_dirent(nfi, &op->txn, &op->src_dir, &op->src_da)			?:
+		      ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dst_dir_ig, &op->dst_dir)	?:
+		      check_ifmt(op->dst_dir.ninode, S_IFDIR, -ENOTDIR)				?:
+		      replace_dirent(nfi, &op->txn, &op->src_da, &op->dst_dir, &op->dst_da)	?:
+		      check_rename(nfi, &op->txn, &op->src_dir, &op->src_da, &op->dst_dir,
+				   &op->dst_da)							?:
+		      rename_update_inodes(nfi, &op->txn, &op->src_dir, &op->src_da,
+					   &op->dst_dir, &op->dst_da);
+
+	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
+
+	ngnfs_txn_teardown(nfi, &op->txn);
+
+	kfree(op);
+out:
+	return ret;
 }
