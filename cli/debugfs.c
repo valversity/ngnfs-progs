@@ -15,6 +15,7 @@
 #include "shared/lk/err.h"
 #include "shared/lk/kernel.h"
 #include "shared/lk/types.h"
+#include "shared/lk/xattr.h"
 
 #include "shared/dir.h"
 #include "shared/format-block.h"
@@ -25,6 +26,7 @@
 #include "shared/nerr.h"
 #include "shared/parse.h"
 #include "shared/thread.h"
+#include "shared/xattr.h"
 
 #include "cli/cli.h"
 
@@ -193,6 +195,99 @@ static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
 		print_err("create", ret);
 }
 
+static void cmd_getxattr(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename, *xname, *value;
+	size_t val_size = NGNFS_BTREE_MAX_VAL_SIZE;
+	int ret;
+
+	if (argc != 3) {
+		printf("usage: getxattr <filename> <xattr name>\n");
+		return;
+	}
+
+	filename = argv[1];
+	xname = argv[2];
+
+	value = malloc(val_size);
+	if (!value) {
+		printf("malloc error");
+		return;
+	}
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("getxattr", ret);
+		goto out;
+	}
+
+	ret = ngnfs_xattr_get(ctx->nfi, &lent.ig, xname, value, val_size);
+	if (ret < 0) {
+		print_err("getxattr", ret);
+		goto out;
+	}
+
+	printf("%.*s\n", ret, value);
+out:
+	free(value);
+}
+
+static void cmd_listxattr(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename;
+	char *buf, *next;
+	u64 buf_size = 64 * 1024; /* default max name list */
+	ssize_t bytes;
+	int nr;
+	int ret;
+
+	if ((argc < 2) || (argc > 3)) {
+		printf("usage: listxattr <filename> [buf size]\n");
+		return;
+	}
+
+	filename = argv[1];
+	if (argc == 3) {
+		ret = parse_ull(&buf_size, argv[2], 0, buf_size);
+		if (ret < 0)
+			return;
+	}
+
+	buf = malloc(buf_size);
+	if (!buf) {
+		printf("malloc error");
+		return;
+	}
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("listxattr", ret);
+		goto out;
+	}
+
+	bytes = ngnfs_xattr_list(ctx->nfi, &lent.ig, buf, buf_size);
+	if (bytes < 0) {
+		print_err("listxattr", bytes);
+		goto out;
+	}
+
+	if (buf_size > 0) {
+		nr = 0;
+		for (next = buf; next < buf + bytes; next += strlen(next) + 1) {
+			nr++;
+			printf("%s\n", next);
+		}
+		printf("total xattrs: %d\n", nr);
+
+	} else {
+		printf("bytes needed to list xattrs: %ld\n", bytes);
+	}
+out:
+	free(buf);
+}
+
 static void cmd_lookup(struct debugfs_context *ctx, int argc, char **argv)
 {
 	struct ngnfs_dir_lookup_entry lent;
@@ -317,6 +412,31 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 	free(buf);
 }
 
+static void cmd_removexattr(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename, *xname;
+	int ret;
+
+	if (argc != 3) {
+		printf("usage: removexattr <filename> <xattr name>\n");
+		return;
+	}
+
+	filename = argv[1];
+	xname = argv[2];
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("removexattr", ret);
+		return;
+	}
+
+	ret = ngnfs_xattr_remove(ctx->nfi, &lent.ig, xname);
+	if (ret < 0)
+		print_err("removexattr", ret);
+}
+
 /*
  * XXX Basic rename hack for now, allows moving a file from the current
  * directory to its parent dir.
@@ -359,6 +479,47 @@ static void cmd_rmdir(struct debugfs_context *ctx, int argc, char **argv)
 	ret = ngnfs_dir_rmdir(ctx->nfi, &ctx->cwd_ig, name, strlen(name));
 	if (ret < 0)
 		print_err("rmdir", ret);
+}
+
+static void cmd_setxattr(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename, *xname, *value;
+	int flags;
+	int ret;
+
+	if ((argc < 4) || (argc > 5)) {
+		printf("usage: setxattr <filename> <xattr name> <xattr value> [create|replace]\n");
+		return;
+	}
+
+	filename = argv[1];
+	xname = argv[2];
+	value = argv[3];
+	flags = 0;
+
+	if (argc == 5) {
+		if (strcmp(argv[4], "create") == 0) {
+			flags |= XATTR_CREATE;
+
+		} else if (strcmp(argv[4], "replace") == 0) {
+			flags |= XATTR_REPLACE;
+
+		} else {
+			printf("setxattr: invalid mode %s\n", argv[4]);
+			return;
+		}
+	}
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("setxattr", ret);
+		return;
+	}
+
+	ret = ngnfs_xattr_set(ctx->nfi, &lent.ig, xname, value, strlen(value), flags);
+	if (ret < 0)
+		print_err("setxattr", ret);
 }
 
 static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
@@ -451,13 +612,17 @@ static struct command {
 	{ "brename", cmd_brename, },
 	{ "cd", cmd_cd, },
 	{ "create", cmd_create, },
+	{ "getxattr", cmd_getxattr, },
+	{ "listxattr", cmd_listxattr, },
 	{ "lookup", cmd_lookup, },
 	{ "mkdir", cmd_mkdir, },
 	{ "mkfs", cmd_mkfs, },
 	{ "quit", cmd_quit, },
 	{ "readdir", cmd_readdir, },
+	{ "removexattr", cmd_removexattr, },
 	{ "rename", cmd_rename, },
 	{ "rmdir", cmd_rmdir, },
+	{ "setxattr", cmd_setxattr, },
 	{ "stat", cmd_stat, },
 	{ "sync", cmd_sync, },
 	{ "unlink", cmd_unlink, },
