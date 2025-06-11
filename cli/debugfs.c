@@ -23,6 +23,7 @@
 #include "shared/mkfs.h"
 #include "shared/mount.h"
 #include "shared/nerr.h"
+#include "shared/parse.h"
 #include "shared/thread.h"
 
 #include "cli/cli.h"
@@ -55,6 +56,58 @@ static void print_err(char *cmd, int err)
 		printf("%s error: "ENOF"\n", cmd, ENOA(-err));
 	else
 		log("%s unexpected error: "ENOF, cmd, ENOA(-err));
+}
+
+static void cmd_brename(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent, sub_lent;
+	char filename[NGNFS_NAME_MAX];
+	char *subdir = "tmp";
+	char *dir;
+	u64 renames, max, i;
+	int ret;
+
+	if (argc != 3) {
+		printf("usage: %s <directory name> <number renames>\n", argv[0]);
+		return;
+	}
+
+	dir = argv[1];
+
+	/* number of files is link max, minus . and .., minus the subdir */
+	max = NGNFS_LINK_MAX - 3;
+	ret = parse_ull(&renames, argv[2], 1, max);
+	if (ret < 0) {
+		printf("number of renames must be between 1 and %llu\n", max);
+		return;
+	}
+
+	ret = ngnfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, dir, strlen(dir))			?:
+	      ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, dir, strlen(dir), &lent)			?:
+	      ngnfs_dir_mkdir(ctx->nfi, &lent.ig, 0755, subdir, strlen(subdir))			?:
+	      ngnfs_dir_lookup(ctx->nfi, &lent.ig, subdir, strlen(subdir), &sub_lent);
+
+	if (ret < 0) {
+		print_err("brename: mkdir", ret);
+		return;
+	}
+
+	for (i = 0; i < renames; i++) {
+		snprintf(filename, sizeof(filename), "%llu", i);
+
+		ret = ngnfs_dir_create(ctx->nfi, &sub_lent.ig, 0644, filename, strlen(filename));
+		if (ret < 0) {
+			print_err("brename: create", ret);
+			return;
+		}
+
+		ret = ngnfs_dir_rename(ctx->nfi, &sub_lent.ig, filename, strlen(filename), &lent.ig,
+				       filename, strlen(filename));
+		if (ret < 0) {
+			print_err("brename: rename", ret);
+			return;
+		}
+	}
 }
 
 static void cmd_cd(struct debugfs_context *ctx, int argc, char **argv)
@@ -352,6 +405,7 @@ static struct command {
 	char *name;
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
 } commands[] = {
+	{ "brename", cmd_brename, },
 	{ "cd", cmd_cd, },
 	{ "create", cmd_create, },
 	{ "lookup", cmd_lookup, },
