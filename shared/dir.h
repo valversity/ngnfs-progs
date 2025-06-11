@@ -3,24 +3,24 @@
 #define NGNFS_SHARED_DIR_H
 
 #include "shared/fs_info.h"
+#include "shared/inode.h"
 
-int ngnfs_dir_create(struct ngnfs_fs_info *nfi, u64 dir_ino, umode_t mode, char *name,
-		     size_t name_len);
+int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+		     char *name, size_t name_len);
 
 /*
- * Readddr fills the buffer with entries.  The start of the buffer must
+ * Readdir fills the buffer with entries.  The start of the buffer must
  * be at least as aligned as the entry.  Entries are padded for
  * alignment.  Use next_off to iterate through them instead of trying to
  * skip name length bytes past the end of the struct.
  */
 struct ngnfs_readdir_entry {
 	u64 pos;
-	u64 ino;
-	u64 gen;
-	u16 next_offset;	/* bytes to add to entry to get next entry */
+	struct ngnfs_inode_ino_gen ig;
+	u16 next_offset;		/* bytes to add to entry to get next entry */
 	u8 dtype;
-	u8 name_len;		/* does not include terminating null, like strlen */
-	u8 name[];		/* is null terminated, name_len doesn't include null byte */
+	u8 name_len;			/* does not include terminating null, like strlen */
+	u8 name[];			/* is null terminated, name_len doesn't include null byte */
 };
 
 /*
@@ -35,7 +35,7 @@ struct ngnfs_readdir_entry {
  * Returns the number of entries filled into the buffer, not the number
  * of bytes.
  */
-int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, u64 dir_ino, u64 pos,
+int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, u64 pos,
 		      struct ngnfs_readdir_entry *buf, size_t size);
 
 #endif

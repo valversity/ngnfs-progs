@@ -54,7 +54,6 @@ static u64 name_hash(void *name, size_t name_len)
 struct dirent_args {
 	u64 hash;
 	size_t dent_size;
-	u64 ino;
 
 	struct ngnfs_dirent dent;
 	u8 __max_name_storage[NGNFS_NAME_MAX - sizeof_field(struct ngnfs_dirent, name)];
@@ -109,29 +108,28 @@ static unsigned int pers_dtype_to_abi_dtype(enum ngnfs_dentry_type type)
 	return DT_UNKNOWN;
 }
 
-static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len, u64 ino,
-			     mode_t mode)
+static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len, mode_t mode)
 {
 	da->hash = name_hash(name, name_len);
 	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
 
-	da->dent.ino = cpu_to_le64(ino);
-	da->dent.version = cpu_to_le64(0); /* XXX :/ */
+	da->dent.ig.ino = cpu_to_le64(0);
+	da->dent.ig.gen = cpu_to_le64(0);
 	da->dent.pers_dtype = mode_to_pers_type(mode);
 	da->dent.name_len = name_len;
+	memcpy(da->dent.name, name, name_len);
 
 	/* ensure that we're stitching together a contiguous max name buffer */
 	BUILD_BUG_ON(offsetofend(struct dirent_args, dent.name) !=
 		     offsetof(struct dirent_args, __max_name_storage));
 	BUILD_BUG_ON((sizeof_field(struct dirent_args, dent.name) +
 		      sizeof_field(struct dirent_args, __max_name_storage)) != NGNFS_NAME_MAX);
-
-	memcpy(da->dent.name, name, name_len);
 }
 
-static int update_dirent_args_ino(struct dirent_args *da, u64 ino)
+static int update_dirent_args(struct dirent_args *da, struct ngnfs_inode_ino_gen *ig)
 {
-	da->dent.ino = cpu_to_le64(ino);
+	da->dent.ig.ino = cpu_to_le64(ig->ino);
+	da->dent.ig.gen = cpu_to_le64(ig->gen);
 
 	return 0;
 }
@@ -236,14 +234,14 @@ static int insert_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 /*
  * Allocate a new inode and add a directory entry referencing it.
  */
-int ngnfs_dir_create(struct ngnfs_fs_info *nfi, u64 dir_ino, umode_t mode, char *name,
-		     size_t name_len)
+int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+		     char *name, size_t name_len)
 {
 	struct {
 		struct ngnfs_transaction txn;
 		struct ngnfs_inode_txn_ref dir;
 		struct ngnfs_inode_txn_ref inode;
-		u64 ino;
+		struct ngnfs_inode_ino_gen ig;
 		u64 nsec;
 		struct dirent_args da;
 	} *op;
@@ -257,14 +255,14 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, u64 dir_ino, umode_t mode, char 
 
 	ngnfs_txn_init(&op->txn);
 	op->nsec = ktime_to_ns(ktime_get_real());
-	init_dirent_args(&op->da, name, name_len, 0, mode | S_IFREG);
+	init_dirent_args(&op->da, name, name_len, mode | S_IFREG);
 
 	do {
-		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir_ino, &op->dir)		?:
+		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir, &op->dir)			?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
-		      ngnfs_inode_alloc(nfi, &op->txn, &op->ino, &op->inode)			?:
-		      ngnfs_inode_init(&op->inode, op->ino, 1, 1, mode | S_IFREG, op->nsec)	?:
-		      update_dirent_args_ino(&op->da, op->ino)					?:
+		      ngnfs_inode_alloc(nfi, &op->txn, &op->ig, &op->inode)			?:
+		      ngnfs_inode_init(&op->inode, &op->ig, 1, mode | S_IFREG, op->nsec)	?:
+		      update_dirent_args(&op->da, &op->ig)					?:
 		      insert_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
 		      update_dir(op->dir.tblk, op->dir.ninode, &op->da, 1);
 
@@ -296,8 +294,8 @@ static int fill_dirent_rd(struct ngnfs_btree_key *key, void *val, size_t val_siz
 	aligned = ALIGN(bytes, __alignof__(struct ngnfs_readdir_entry));
 
 	ra->ent->pos = le64_to_cpu(key->k[0]);
-	ra->ent->ino = le64_to_cpu(dent->ino);
-	ra->ent->gen = le64_to_cpu(dent->version);
+	ra->ent->ig.ino = le64_to_cpu(dent->ig.ino);
+	ra->ent->ig.gen = le64_to_cpu(dent->ig.gen);
 	ra->ent->next_offset = aligned;
 	ra->ent->dtype = pers_dtype_to_abi_dtype(dent->pers_dtype);
 	ra->ent->name_len = dent->name_len;
@@ -333,7 +331,7 @@ static int fill_dirent_rd(struct ngnfs_btree_key *key, void *val, size_t val_siz
  * the last entry so that the caller doesn't have to discover eof with a
  * final call that returns nothing.)
  */
-int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, u64 dir_ino, u64 pos,
+int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, u64 pos,
 		      struct ngnfs_readdir_entry *buf, size_t size)
 {
 	struct ngnfs_inode_txn_ref dir;
@@ -355,7 +353,7 @@ int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, u64 dir_ino, u64 pos,
 		ra.size = size;
 		ra.nr = 0;
 
-		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, dir_ino, &dir)			?:
+		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, dir_ig, &dir)			?:
 		      check_ifmt(dir.ninode, S_IFDIR, -ENOTDIR)					?:
 		      ngnfs_btree_read_iter(nfi, &txn, &dir.ninode->dirents, &key,
 					    NULL, NULL, fill_dirent_rd, &ra);

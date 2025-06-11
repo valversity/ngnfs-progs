@@ -19,14 +19,14 @@
  * to pack inode data into the rest of the block.
  */
 
-int ngnfs_inode_init(struct ngnfs_inode_txn_ref *itref, u64 ino, u64 gen, u32 nlink, umode_t mode,
-		     u64 nsec)
+int ngnfs_inode_init(struct ngnfs_inode_txn_ref *itref, struct ngnfs_inode_ino_gen *ig, u32 nlink,
+		     umode_t mode, u64 nsec)
 {
 	struct ngnfs_txn_block *tblk = itref->tblk;
 	struct ngnfs_inode *ninode = itref->ninode;
 
-	ngnfs_tblk_assign(tblk, ninode->ino, cpu_to_le64(ino));
-	ngnfs_tblk_assign(tblk, ninode->gen, cpu_to_le64(gen));
+	ngnfs_tblk_assign(tblk, ninode->ig.ino, cpu_to_le64(ig->ino));
+	ngnfs_tblk_assign(tblk, ninode->ig.gen, cpu_to_le64(ig->gen));
 	ngnfs_tblk_assign(tblk, ninode->size, 0);
 	ngnfs_tblk_assign(tblk, ninode->version, cpu_to_le64(1));
 	ngnfs_tblk_assign(tblk, ninode->nlink, cpu_to_le32(nlink));
@@ -47,22 +47,25 @@ int ngnfs_inode_init(struct ngnfs_inode_txn_ref *itref, u64 ino, u64 gen, u32 nl
 /*
  * XXX should be validating that the block is a valid inode, etc.
  */
-int ngnfs_inode_get(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, nbf_t nbf, u64 ino,
-		    struct ngnfs_inode_txn_ref *itref)
+int ngnfs_inode_get(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, nbf_t nbf,
+		    struct ngnfs_inode_ino_gen *ig, struct ngnfs_inode_txn_ref *itref)
 {
-	return ngnfs_txn_get_block(nfi, txn, ino, nbf, &itref->tblk, (void **)&itref->ninode);
+	return ngnfs_txn_get_block(nfi, txn, ig->ino, nbf, &itref->tblk, (void **)&itref->ninode);
 }
 
-int ngnfs_inode_alloc(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, u64 *ino,
-		      struct ngnfs_inode_txn_ref *itref)
+int ngnfs_inode_alloc(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+		      struct ngnfs_inode_ino_gen *ig, struct ngnfs_inode_txn_ref *itref)
 {
-	u64 bnr;
+	struct ngnfs_inode_ino_gen new;
 	int ret;
 
-	ret = ngnfs_txn_alloc_meta(txn, &bnr) ?:
-	      ngnfs_inode_get(nfi, txn, NBF_WRITE | NBF_NEW, bnr, itref);
+	new.gen = 1; /* XXX should look up previous gen and increment */
+	ret = ngnfs_txn_alloc_meta(txn, &new.ino) ?:
+	      ngnfs_inode_get(nfi, txn, NBF_WRITE | NBF_NEW, &new, itref);
+
 	if (ret == 0)
-		*ino = bnr;
+		*ig = new;
+
 	return ret;
 }
 
@@ -70,7 +73,8 @@ int ngnfs_inode_alloc(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, 
  * A transaction that just copies the inode in the block to the caller's
  * buffer.
  */
-int ngnfs_inode_read_copy(struct ngnfs_fs_info *nfi, u64 ino, void *buf, int size)
+int ngnfs_inode_read_copy(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig,
+			  void *buf, int size)
 {
 	struct ngnfs_inode_txn_ref itref;
 	struct ngnfs_transaction txn;
@@ -84,7 +88,7 @@ int ngnfs_inode_read_copy(struct ngnfs_fs_info *nfi, u64 ino, void *buf, int siz
 	ngnfs_txn_init(&txn);
 
 	do {
-		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, ino, &itref);
+		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, ig, &itref);
 		if (ret == 0) {
 			ret = min(size, sizeof(struct ngnfs_inode));
 			memcpy(buf, itref.ninode, ret);
