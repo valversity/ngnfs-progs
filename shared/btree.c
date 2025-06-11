@@ -1,19 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
 #include "shared/lk/align.h"
-#include "shared/lk/bitops.h"
-#include "shared/lk/build_bug.h"
 #include "shared/lk/bug.h"
 #include "shared/lk/byteorder.h"
-#include "shared/lk/container_of.h"
-#include "shared/lk/errno.h"
 #include "shared/lk/kernel.h"
 #include "shared/lk/limits.h"
-#include "shared/lk/minmax.h"
 #include "shared/lk/types.h"
 #include "shared/lk/sort.h"
-#include "shared/lk/stddef.h"
-#include "shared/lk/string.h"
 
 #include "shared/block.h"
 #include "shared/btree.h"
@@ -176,16 +169,27 @@ static u16 find_key_ind(struct ngnfs_btree_block *bt, struct ngnfs_btree_key *ke
 }
 
 /*
- * True if there's room in the block for an insertion, just not
- * contiguously available at the tail of the block.  The caller is using
- * this after having checked if they should split so we don't have to
- * check if the block is too full to justify compacting.
+ * True if there's room in the block for an insertion or replacement,
+ * just not contiguously available at the tail of the block. The caller
+ * is using this after having checked if they should split so we don't
+ * have to check if the block is too full to justify compacting.
+ *
+ * If we are preparing a parent node for a potential write operation to
+ * a leaf, we treat it like a insert.
  */
-static bool should_compact(struct ngnfs_btree_block *bt, u16 val_size)
+static bool should_compact(struct ngnfs_btree_block *bt, u16 val_size, u16 old_size, int op)
 {
-	u16 size = aligned_item_size(val_size);
+	u16 val_bytes = aligned_item_size(val_size);
+	u16 old_bytes = aligned_item_size(old_size);
+	int ret;
 
-	return (size > le16_to_cpu(bt->tail_free)) && (size <= le16_to_cpu(bt->total_free));
+	if (op == BOP_DELETE)
+		ret = false;
+	else
+		ret = (val_bytes > le16_to_cpu(bt->tail_free)) &&
+		      (val_bytes <= le16_to_cpu(bt->total_free) + old_bytes);
+
+	return ret;
 }
 
 /*
@@ -197,26 +201,55 @@ static bool should_compact(struct ngnfs_btree_block *bt, u16 val_size)
  * But we'll also split if the item doesn't fit in tail free space and
  * would fit in fragmented free space, but free space is so low that
  * we're likely to split anyway soon after compaction.
+ *
+ * If we are replacing an existing value, we ignore any free space
+ * created by deleting the old value to keep the split/merge/compact
+ * logic away from the insert/delete/replace operations.
+ *
+ * If we are preparing a parent node for a potential write operation to
+ * a leaf, we treat it like an insert.
  */
-static bool should_split(struct ngnfs_btree_block *bt, u16 val_size)
+static bool should_split(struct ngnfs_btree_block *bt, u16 val_size, int op)
 {
 	u16 size = aligned_item_size(val_size);
 	u16 total_free = le16_to_cpu(bt->total_free);
+	int ret;
 
-	return (size > total_free) ||
-	       (size > le16_to_cpu(bt->tail_free) && total_free < NGNFS_BTREE_SPLIT_FREE_THRESH);
+	if (op == BOP_DELETE)
+		ret = false;
+	else
+		ret = (size > total_free) ||
+		      (size > le16_to_cpu(bt->tail_free) &&
+		       total_free < NGNFS_BTREE_SPLIT_FREE_THRESH);
+
+	return ret;
 }
 
 /*
- * True if the caller should merge after removing an item with the given
- * value size.  The free space gets large enough that the item
- * population must be small enough and we want to pull items from
+ * True if the caller should merge or rebalance this block after
+ * removing or replacing an item with the given value size. If the free
+ * space gets large enough that the item population goes below the merge
+ * free space threshold, then we want to pull items from or merge with
  * neighboring blocks to restore balance.
+ *
+ * If we are preparing a parent node for a potential write operation to
+ * a leaf, we treat it like a delete.
  */
-static bool should_merge(struct ngnfs_btree_block *bt, u16 val_size)
+static bool should_merge(struct ngnfs_btree_block *bt, u16 val_size, u16 old_size, int op)
 {
-	return le16_to_cpu(bt->total_free) + aligned_item_size(val_size) >=
-		NGNFS_BTREE_MERGE_FREE_THRESH;
+	u16 val_bytes = aligned_item_size(val_size);
+	u16 old_bytes = aligned_item_size(old_size);
+	int ret;
+
+	if (op == BOP_INSERT)
+		ret = false;
+	else if (op == BOP_REPLACE && val_bytes >= old_bytes)
+		ret = false;
+	else
+		ret = le16_to_cpu(bt->total_free) + val_bytes - old_bytes >=
+		      NGNFS_BTREE_MERGE_FREE_THRESH;
+
+	return ret;
 }
 
 /*
@@ -241,8 +274,8 @@ static inline void memmove_item_headers(struct ngnfs_txn_block *tblk,
  * at the parent's link.
  *
  * Because this references an existing item we will not compact items
- * here.  The caller must have ensured that there was sufficient free
- * space for the item.
+ * here. The caller must ensure that there is sufficient free space for
+ * the item.
  */
 static struct ngnfs_btree_item *insert_item(struct ngnfs_txn_block *tblk,
 					    struct ngnfs_btree_block *bt, u16 ind,
@@ -306,6 +339,55 @@ static void delete_item(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block *
 	nr = le16_to_cpu(bt->nr_items);
 	ngnfs_tblk_memset(tblk, &bt->ihdrs[nr], 0, sizeof(struct ngnfs_btree_item_header));
 	ngnfs_tblk_memset(tblk, item, 0, bytes);
+}
+
+/*
+ * Replace an item, either in place if it is equal to or smaller than
+ * the existing item, or else allocate a new value at the tail and point
+ * the header at it.
+ *
+ * Because this references an existing item we will not compact items
+ * here. The caller must ensure that there is sufficient free space for
+ * the item.
+ */
+static struct ngnfs_btree_item *replace_item(struct ngnfs_txn_block *tblk,
+					     struct ngnfs_btree_block *bt, u16 ind,
+					     struct ngnfs_btree_key *key, void *val, u16 val_size)
+{
+	u16 off = le16_to_cpu(bt->ihdrs[ind].off);
+	u16 tail = NGNFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free);
+	u16 old_size = item_val_size(bt, ind);
+	u16 old_bytes = aligned_item_size(old_size);
+	u16 val_bytes = aligned_item_size(val_size);
+	struct ngnfs_btree_item *item = item_from_ind(bt, ind);
+
+	BUG_ON(ind >= NGNFS_BTREE_MAX_ITEMS);
+	BUG_ON(le16_to_cpu(bt->tail_free) - val_bytes + old_bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->total_free) - val_bytes + old_bytes > NGNFS_BTREE_MAX_FREE);
+
+	if (off == tail - old_bytes) {
+		/* old item at tail, update in place, adjust tail free */
+		ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, old_bytes - val_bytes);
+
+	} else if (val_bytes > old_bytes) {
+		/* allocate from tail, zero out old value */
+		ngnfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(tail));
+		ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, -val_bytes);
+		ngnfs_tblk_memset(tblk, item, 0, old_size);
+		item = item_from_ind(bt, ind);
+	}
+
+	if (val_size) {
+		/* copy the value and zero out the tail */
+		ngnfs_tblk_memcpy(tblk, &item->val[0], val, val_size);
+		if (val_size < old_size)
+			ngnfs_tblk_zero_tail(tblk, &item->val[0], val_size, old_size);
+	}
+
+	ngnfs_tblk_le16_add_cpu(tblk, &bt->total_free, old_bytes - val_bytes);
+	ngnfs_tblk_assign(tblk, bt->ihdrs[ind].val_size, cpu_to_le16(val_size));
+
+	return item;
 }
 
 static int cmp_ihdr_off(const void *A, const void *B, const void *priv)
@@ -703,15 +785,21 @@ out:
 
 /*
  * Ensure that the traversal's bt block will maintain the btree
- * invariant after inserting or deleting an item with the given
- * val_size.  We're promising the caller that they will be able to
- * insert or delete if we return success.
+ * invariant after inserting, deleting, or replacing an item of old_size
+ * with an item of val_size. We do this by splitting, merging, or
+ * compacting as necessary. We're promising the caller that when this
+ * function returns, they will be able to complete their operation.
  *
- * We split if inserting an item with the given val size doesn't fit in
- * the block.  We merge if deleting an item of the given val_size would
- * bring the utilization of the block under the merge threshold.  We
- * also compact if we did neither and compaction would make room for an
- * insertion.
+ * If the op is not replace, old_size is set to 0.
+ *
+ * A common case is traversing parent nodes to return a writeable leaf
+ * to a caller, in which case the operation is "prepare to either insert
+ * or delete a btree node reference depending on what the caller decides
+ * to do." So the prepare operation may either split or merge parent
+ * nodes to produce a btree path that can accomodate either one removal
+ * or one insertion of a parent node anywhere along the path.
+ *
+ * We compact if it would make room for an insertion.
  *
  * The caller can tell us to return denied if we would have split/merged
  * but they didn't want us to.  This saves the caller from having to
@@ -727,10 +815,11 @@ enum {
 	TSM_COMPACTED,
 	TSM_DENIED,
 };
+
 static int try_split_merge(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 			   struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
 			   struct traversal_blocks *trav, struct ngnfs_btree_key *key,
-			   size_t val_size, bool deny)
+			   int val_size, int old_size, int op, bool deny)
 {
 	bool splitting;
 	bool merging;
@@ -738,8 +827,8 @@ static int try_split_merge(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 	u64 bnr;
 	int ret;
 
-	splitting = should_split(trav->bt, val_size);
-	merging = !splitting && trav->parent && should_merge(trav->bt, val_size);
+	splitting = should_split(trav->bt, val_size, op);
+	merging = !splitting && trav->parent && should_merge(trav->bt, val_size, old_size, op);
 
 	if (splitting || merging) {
 		if (deny) {
@@ -773,7 +862,7 @@ static int try_split_merge(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 			goto out;
 		ret = TSM_SPLIT_MERGED;
 
-	} else if (should_compact(trav->bt, val_size)) {
+	} else if (should_compact(trav->bt, val_size, old_size, op)) {
 		compact_items(trav->tblk, trav->bt);
 		ret = TSM_COMPACTED;
 
@@ -870,7 +959,8 @@ static int writable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 
 		/* ensure that parent is prepared for child split/merge */
 		ret = try_split_merge(nfi, txn, root_tblk, root, trav, key,
-				      sizeof(struct ngnfs_block_ref), false);
+				      sizeof(struct ngnfs_block_ref),
+				      sizeof(struct ngnfs_block_ref), BOP_PREPARE, false);
 		if (ret < 0)
 			goto out;
 
@@ -1090,13 +1180,13 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 				goto out;
 			}
 
-			if (WARN_ON_ONCE(op.delete && !item)) {
+			if (WARN_ON_ONCE((op.op == BOP_DELETE || op.op == BOP_REPLACE) && !item)) {
 				ret = -ENOENT;
 				goto out;
 			}
 
 			/* alloc new leaf block if tree is empty */
-			if (op.insert && !trav.bt) {
+			if ((op.op == BOP_INSERT) && !trav.bt) {
 				ret = alloc_root_block(nfi, txn, root_tblk, root,
 						       &trav.tblk, &trav.bt);
 				if (ret < 0)
@@ -1105,14 +1195,20 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 				/* ind/item already 0/NULL from !bt */
 			}
 
-			if (op.delete) {
+			if (op.op == BOP_DELETE) {
 				op.key = item->key;
 				op.val_size = item_val_size(trav.bt, ind);
 			}
 
-			if (op.insert || op.delete) {
+			if (op.op == BOP_REPLACE) {
+				op.key = item->key;
+				op.old_size = item_val_size(trav.bt, ind);
+			}
+
+			if (op.op == BOP_INSERT || op.op == BOP_DELETE || op.op == BOP_REPLACE) {
 				ret = try_split_merge(nfi, txn, root_tblk, root, &trav,
-						      &op.key, op.val_size, deny_split_merge);
+						      &op.key, op.val_size, op.old_size, op.op,
+						      deny_split_merge);
 				if (ret < 0)
 					goto out;
 				if (ret == TSM_DENIED) {
@@ -1135,15 +1231,19 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 				}
 			}
 
-			if (op.insert) {
+			if (op.op == BOP_INSERT) {
 				insert_item(trav.tblk, trav.bt, ind, &op.key, op.val, op.val_size);
 				ind++;
 
-			} else if (op.delete) {
+			} else if (op.op == BOP_DELETE) {
 				delete_item(trav.tblk, trav.bt, ind);
 				ret = check_free_root_block(nfi, txn, root_tblk, root, &trav);
 				if (ret < 0)
 					goto out;
+
+			} else if (op.op == BOP_REPLACE) {
+				replace_item(trav.tblk, trav.bt, ind, &op.key, op.val, op.val_size);
+				ind++;
 
 			} else if (item) {
 				ind++;

@@ -19,17 +19,34 @@
 typedef int (*ngnfs_btree_read_iter_fn_t)(struct ngnfs_btree_key *key, void *val,
 					  size_t val_size, void *arg);
 
+/*
+ * btree operations. 0 should be always be a no-op to catch bugs.
+ *
+ * BOP_PREPARE is used to pre-split or merge parent (non-leaf) nodes
+ * while traversing to return a writeable leaf so that the caller can do
+ * at least one operation without re-traversing the btree. We don't know
+ * whether the caller will insert, delete, or replace, or how big the
+ * value will be. So we pre-split any parent that can't fit another
+ * block ref, and pre-merge any parent if removing a block ref would
+ * bring it below the merge threshold.
+ */
+enum {
+	BOP_NOOP = 0,
+	BOP_INSERT,
+	BOP_DELETE,
+	BOP_REPLACE,
+	BOP_PREPARE,
+};
 
 /*
- * Setting both insert and delete is allowed, it overwrites the existing
- * items value with the op's value.
+ * Describes the btree operation that should be done.
  */
 struct ngnfs_btree_op {
 	struct ngnfs_btree_key key;
 	void *val;
 	size_t val_size;
-	unsigned insert:1,
-		 delete:1;
+	size_t old_size;	/* 0 or size of value to replace */
+	unsigned op;
 };
 
 /*

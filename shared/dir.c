@@ -250,7 +250,7 @@ static int insert_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size,
 		}
 	}
 
-	op->insert = 1;
+	op->op = BOP_INSERT;
 	init_dirent_key(&op->key, da->hash);
 	op->val = &da->dent;
 	op->val_size = da->dent_size;
