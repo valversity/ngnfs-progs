@@ -222,6 +222,23 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 	free(buf);
 }
 
+static void cmd_rmdir(struct debugfs_context *ctx, int argc, char **argv)
+{
+	char *name;
+	int ret;
+
+	if (argc != 2) {
+		printf("usage: rmdir <pathname>\n");
+		return;
+	}
+
+	name = argv[1];
+
+	ret = ngnfs_dir_rmdir(ctx->nfi, &ctx->cwd_ig, name, strlen(name));
+	if (ret < 0)
+		print_err("rmdir", ret);
+}
+
 static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 {
 	struct ngnfs_inode_ino_gen ig = ctx->cwd_ig;
@@ -287,6 +304,22 @@ static void cmd_sync(struct debugfs_context *ctx, int argc, char **argv)
 		print_err("sync", ret);
 }
 
+static void cmd_unlink(struct debugfs_context *ctx, int argc, char **argv)
+{
+	char *name;
+	int ret;
+
+	if (argc != 2) {
+		printf("usage: unlink <pathname>\n");
+		return;
+	}
+
+	name = argv[1];
+
+	ret = ngnfs_dir_unlink(ctx->nfi, &ctx->cwd_ig, name, strlen(name));
+	if (ret < 0)
+		print_err("unlink", ret);
+}
 
 static struct command {
 	char *name;
@@ -299,8 +332,10 @@ static struct command {
 	{ "mkfs", cmd_mkfs, },
 	{ "quit", cmd_quit, },
 	{ "readdir", cmd_readdir, },
+	{ "rmdir", cmd_rmdir, },
 	{ "stat", cmd_stat, },
 	{ "sync", cmd_sync, },
+	{ "unlink", cmd_unlink, },
 };
 
 static int compar_cmd_names(const void *A, const void *B)

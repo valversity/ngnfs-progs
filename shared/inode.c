@@ -67,6 +67,9 @@ int ngnfs_inode_init(struct ngnfs_inode_txn_ref *itref, struct ngnfs_inode_ino_g
 int ngnfs_inode_get(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, nbf_t nbf,
 		    struct ngnfs_inode_ino_gen *ig, struct ngnfs_inode_txn_ref *itref)
 {
+	if (ig->ino == 0) /* probably a buggy caller but could be corruption */
+		return -EUCLEAN;
+
 	return ngnfs_txn_get_block(nfi, txn, ig->ino, nbf, &itref->tblk, (void **)&itref->ninode);
 }
 
@@ -115,4 +118,31 @@ int ngnfs_inode_read_copy(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen 
 	ngnfs_txn_teardown(nfi, &txn);
 out:
 	return ret;
+}
+
+/*
+ * Update an inode to reflect the addition or removal of one or more
+ * links to it.
+ */
+int ngnfs_inode_update(struct ngnfs_txn_block *tblk, struct ngnfs_inode *inode, s32 delta)
+{
+	s32 nlink = le32_to_cpu(inode->nlink);
+
+	if ((delta > 0) && (nlink > NGNFS_LINK_MAX - delta))
+		return -EMLINK;
+
+	/* nlink < 0 is a data corruption bug */
+	if ((delta < 0) && (nlink + delta < 0))
+		return -EUCLEAN;
+
+	/*
+	 * If this is the removal of the last external link to a dir, remove the "."
+	 * self-link too.
+	 */
+	if ((nlink == 2 && delta == -1) && ((le32_to_cpu(inode->mode) & S_IFMT) == S_IFDIR))
+		delta = -2;
+
+	ngnfs_tblk_assign(tblk, inode->nlink, cpu_to_le32(nlink + delta));
+
+	return 0;
 }

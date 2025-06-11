@@ -41,5 +41,6 @@ int ngnfs_inode_alloc(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 		      struct ngnfs_inode_ino_gen *ig, struct ngnfs_inode_txn_ref *itref);
 int ngnfs_inode_read_copy(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig,
 			  void *buf, int size);
+int ngnfs_inode_update(struct ngnfs_txn_block *tblk, struct ngnfs_inode *inode, s32 delta);
 
 #endif
