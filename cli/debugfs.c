@@ -17,6 +17,7 @@
 #include "shared/lk/types.h"
 #include "shared/lk/xattr.h"
 
+#include "shared/data.h"
 #include "shared/dir.h"
 #include "shared/format-block.h"
 #include "shared/inode.h"
@@ -357,6 +358,105 @@ static void cmd_quit(struct debugfs_context *ctx, int argc, char **argv)
 	return;
 }
 
+static void cmd_read(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename;
+	char *buf;
+	u64 offset, read_size;
+	u64 todo, done, zeroes, poisoned, garbage;
+	u64 i;
+	int buf_size = 4 * NGNFS_DATA_MAX_IO; /* allow multiple txn's per call */
+	int ret;
+
+	if (argc != 4) {
+		printf("usage: read <filename> <offset> <length>\n");
+		return;
+	}
+
+	filename = argv[1];
+
+	ret = strtoull_nerr(&offset, argv[2], NULL, 0);
+	if (ret < 0) {
+		print_err("parsing offset", ret);
+		return;
+	}
+
+	ret = parse_ull(&read_size, argv[3], 0, SIZE_MAX);
+	if (ret < 0)
+		return;
+
+	if (read_size < buf_size)
+		buf_size = read_size;
+
+	buf = malloc(buf_size);
+	if (!buf) {
+		printf("malloc error");
+		return;
+	}
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("read", ret);
+		goto out;
+	}
+
+	zeroes = 0;
+	poisoned = 0;
+	garbage = 0;
+
+	for (done = 0; done < read_size; done += ret) {
+		todo = read_size - done;
+		if (todo > buf_size)
+			todo = buf_size;
+
+		memset(buf, 'x', todo); /* poison the buffer */
+
+		ret = ngnfs_data_read(ctx->nfi, &lent.ig, offset, buf, todo);
+		if (ret < 0) {
+			print_err("read", ret);
+			goto out;
+		} else if (ret == 0) {
+			printf("read: EOF\n");
+			break;
+		}
+
+		/* count what kind of bytes we read */
+		for (i = 0; i < ret; i++) {
+			switch (buf[i]) {
+			case '.':
+				break;
+			case '\0':
+				zeroes++;
+				break;
+			case 'x':
+				if (poisoned == 0)
+					printf("error: poisoned byte found at %llu\n", i + done);
+				poisoned++;
+				break;
+			default:
+				if (garbage == 0)
+					printf("error: garbage byte %c found at %llu\n",
+					       buf[i], i + done);
+				garbage++;
+				break;
+			}
+		}
+		offset += ret;
+	}
+
+	if (done < read_size)
+		printf("short read: %llu bytes of %llu requested\n", done, read_size);
+
+	if (done > read_size)
+		printf("error: read too many bytes: %llu of %llu requested\n", done, read_size);
+
+	printf("read %llu bytes (%llu zero bytes %llu poisoned bytes %llu garbage bytes)\n",
+	       done, zeroes, poisoned, garbage);
+out:
+	free(buf);
+}
+
 static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 {
 	struct ngnfs_readdir_entry *buf;
@@ -604,6 +704,78 @@ static void cmd_unlink(struct debugfs_context *ctx, int argc, char **argv)
 		print_err("unlink", ret);
 }
 
+static void cmd_write(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *filename;
+	char *buf;
+	u64 offset;
+	u64 write_size;
+	u64 buf_size = 4 * NGNFS_DATA_MAX_IO; /* allow multiple txn's per call */
+	u64 todo, done;
+	int ret;
+
+	if (argc != 4) {
+		printf("usage: write <filename> <offset> <length>\n");
+		return;
+	}
+
+	filename = argv[1];
+
+	ret = strtoull_nerr(&offset, argv[2], NULL, 0);
+	if (ret < 0) {
+		print_err("parsing offset", ret);
+		return;
+	}
+
+	ret = parse_ull(&write_size, argv[3], 0, SIZE_MAX);
+	if (ret < 0)
+		return;
+
+	if (write_size < buf_size)
+		buf_size = write_size;
+
+	buf = malloc(buf_size);
+	if (!buf) {
+		printf("malloc error");
+		return;
+	}
+	memset(buf, '.', buf_size);
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	if (ret < 0) {
+		print_err("write", ret);
+		goto out;
+	}
+
+	for (done = 0; done < write_size; done += ret) {
+		todo = write_size - done;
+		if (todo > buf_size)
+			todo = buf_size;
+
+		ret = ngnfs_data_write(ctx->nfi, &lent.ig, offset, buf, todo);
+
+		if (ret < 0) {
+			print_err("write", ret);
+			goto out;
+		}
+
+		if (ret == 0)
+			break;
+
+		offset += ret;
+	}
+
+	if (done < write_size)
+		printf("short write: %llu of %llu bytes requested\n", done, buf_size);
+	else if (done > write_size)
+		printf("error: wrote too many bytes: %llu of %llu requested\n", done, buf_size);
+	else
+		printf("wrote %llu bytes\n", done);
+out:
+	free(buf);
+}
+
 static struct command {
 	char *name;
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
@@ -618,6 +790,7 @@ static struct command {
 	{ "mkdir", cmd_mkdir, },
 	{ "mkfs", cmd_mkfs, },
 	{ "quit", cmd_quit, },
+	{ "read", cmd_read, },
 	{ "readdir", cmd_readdir, },
 	{ "removexattr", cmd_removexattr, },
 	{ "rename", cmd_rename, },
@@ -626,6 +799,7 @@ static struct command {
 	{ "stat", cmd_stat, },
 	{ "sync", cmd_sync, },
 	{ "unlink", cmd_unlink, },
+	{ "write", cmd_write, },
 };
 
 static int compar_cmd_names(const void *A, const void *B)

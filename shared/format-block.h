@@ -2,12 +2,15 @@
 #ifndef NGNFS_SHARED_FORMAT_BLOCK_H
 #define NGNFS_SHARED_FORMAT_BLOCK_H
 
+#include "shared/lk/build_bug.h"
 #include "shared/lk/compiler_attributes.h"
 #include "shared/lk/limits.h"
+#include "shared/lk/log2.h"
 #include "shared/lk/types.h"
 
 #define NGNFS_BLOCK_SHIFT	12
 #define NGNFS_BLOCK_SIZE	(1 << NGNFS_BLOCK_SHIFT)
+#define NGNFS_BLOCK_MASK	(NGNFS_BLOCK_SIZE - 1ULL)
 
 struct ngnfs_block_ref {
 	__le64 bnr;
@@ -96,6 +99,37 @@ struct ngnfs_ino_gen {
 };
 
 /*
+ * Data blocks are pointed to by a simple tree of indirect blocks rooted
+ * in a single field in the inode. The height is one greater than the
+ * level of the referenced block. It's 0 for an empty tree.
+ */
+struct ngnfs_data_root {
+	struct ngnfs_block_ref ref;
+	__u8 height;
+	__u8 _pad[7];
+};
+
+/*
+ * Indirect blocks are a simple array of block refs. We rely on the
+ * number of references per indirect block being a power of 2, so check
+ * that at compile time.
+ */
+#define NGNFS_DATA_REFS_PER_BLK (NGNFS_BLOCK_SIZE / sizeof(struct ngnfs_block_ref))
+BUILD_BUG_ON(NGNFS_DATA_REFS_PER_BLK & (NGNFS_DATA_REFS_PER_BLK - 1));
+
+/*
+ * Because blocks per ref is based on the size of a struct, we can't do
+ * the smart thing and define the shift first and then the value, we
+ * have to go backwards and define the shift from the value instead.
+ */
+
+#define NGNFS_DATA_REFS_PER_BLK_SHIFT const_ilog2(NGNFS_DATA_REFS_PER_BLK)
+
+struct ngnfs_indirect_block {
+	struct ngnfs_block_ref refs[NGNFS_DATA_REFS_PER_BLK];
+};
+
+/*
  * Inodes are stored in inode blocks.  Inode blocks numbers are directly
  * calculated from the inode number.  The block itself is formatted as a
  * btree block and the inodes (and other inline inode data) are stored
@@ -121,6 +155,7 @@ struct ngnfs_inode {
 	__le64 crtime_nsec;
 	struct ngnfs_btree_root dirents;
 	struct ngnfs_btree_root xattrs;
+	struct ngnfs_data_root data;
 };
 
 #define NGNFS_ROOT_INO 1
