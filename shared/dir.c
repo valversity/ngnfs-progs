@@ -6,6 +6,7 @@
 #include "shared/lk/bug.h"
 #include "shared/lk/byteorder.h"
 #include "shared/lk/container_of.h"
+#include "shared/lk/err.h"
 #include "shared/lk/errno.h"
 #include "shared/lk/fs_types.h"
 #include "shared/lk/kernel.h"
@@ -82,6 +83,7 @@ static u64 name_hash(void *name, size_t name_len)
 struct dirent_args {
 	u64 hash;
 	size_t dent_size;
+	bool found;
 
 	struct ngnfs_dirent dent;
 	u8 __max_name_storage[NGNFS_NAME_MAX - sizeof_field(struct ngnfs_dirent, name)];
@@ -161,6 +163,7 @@ static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len
  */
 static void reset_dirent_args(struct dirent_args *da)
 {
+	da->found = 0;
 	da->dent.ig.ino = cpu_to_le64(0);
 	da->dent.ig.gen = cpu_to_le64(0);
 }
@@ -452,4 +455,91 @@ int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir
 	ngnfs_txn_teardown(nfi, &txn);
 out:
 	return ret ?: ra.nr;
+}
+
+static int fill_lookup_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *arg)
+{
+	struct dirent_args *da = arg;
+	struct ngnfs_dirent *dent = val;
+
+	if (!names_equal(dent->name, dent->name_len, (u8 *) da->dent.name, da->dent.name_len))
+		return NGNFS_BTREE_ITER_CONTINUE;
+
+	da->found = 1;
+	memcpy(&da->dent, dent, val_size);
+
+	return 0;
+}
+
+static int lookup_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+			 struct ngnfs_inode_txn_ref *dir, struct dirent_args *da)
+{
+	struct ngnfs_btree_key key;
+	struct ngnfs_btree_key last;
+	int ret;
+
+	init_dirent_key(&key, da->hash);
+	init_dirent_key(&last, da->hash | NGNFS_DIRENT_COLL_BIT);
+
+	ret = dots_and_dents_read_iter(nfi, txn, &dir->ninode->dirents, dir, &key, NULL, &last,
+				       fill_lookup_rd, da);
+	if (ret < 0)
+		goto out;
+
+	if (!da->found)
+		ret = -ENOENT;
+out:
+	return ret;
+}
+
+static int copy_dent_to_lent(struct ngnfs_dirent *dent, struct ngnfs_dir_lookup_entry *lent)
+{
+	lent->ig.ino = le64_to_cpu(dent->ig.ino);
+	lent->ig.gen = le64_to_cpu(dent->ig.gen);
+	lent->dtype = pers_dtype_to_abi_dtype(dent->pers_dtype);
+
+	return 0;
+}
+
+int ngnfs_dir_lookup(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, char *name,
+		     size_t name_len, struct ngnfs_dir_lookup_entry *lent)
+{
+	struct {
+		struct ngnfs_transaction txn;
+		struct ngnfs_inode_txn_ref dir;
+		struct dirent_args da;
+	} *op;
+	int ret;
+
+	if (name_len > NGNFS_NAME_MAX) {
+		ret = -ENAMETOOLONG;
+		goto out;
+	}
+
+	op = kmalloc(sizeof(*op), GFP_NOFS);
+	if (!op) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ngnfs_txn_init(&op->txn);
+	init_dirent_args(&op->da, name, name_len, 0);
+
+	do {
+		reset_dirent_args(&op->da);
+
+		ret = ngnfs_inode_get(nfi, &op->txn, NBF_READ, dir_ig, &op->dir)		?:
+		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
+		      lookup_dirent(nfi, &op->txn, &op->dir, &op->da);
+
+	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
+
+	ngnfs_txn_teardown(nfi, &op->txn);
+
+	if (ret == 0)
+		copy_dent_to_lent(&op->da.dent, lent);
+
+	kfree(op);
+out:
+	return ret;
 }

@@ -14,8 +14,8 @@
 #include "shared/lk/kernel.h"
 #include "shared/lk/types.h"
 
-#include "shared/format-block.h"
 #include "shared/dir.h"
+#include "shared/format-block.h"
 #include "shared/inode.h"
 #include "shared/log.h"
 #include "shared/mkfs.h"
@@ -67,6 +67,40 @@ static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
 	ret = ngnfs_dir_create(ctx->nfi, &ctx->cwd_ig, 0644, argv[1], strlen(argv[1]));
 	if (ret < 0)
 		print_err("create", ret);
+}
+
+static void cmd_lookup(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char *name;
+	int name_len;
+	int ret;
+
+	if (argc != 2) {
+		printf("usage: lookup <pathname>\n");
+		return;
+	}
+
+	name = argv[1];
+	name_len = strlen(name);
+
+	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, name_len, &lent);
+	if (ret < 0) {
+		print_err("lookup", ret);
+		return;
+	}
+
+	printf("name: %.*s\n"
+	       "name_len: %d\n"
+	       "dtype: %o\n"
+	       "ino: %llu\n"
+	       "gen: %llu\n",
+	       name_len,
+	       name,
+	       name_len,
+	       lent.dtype,
+	       lent.ig.ino,
+	       lent.ig.gen);
 }
 
 static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
@@ -199,6 +233,7 @@ static struct command {
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
 } commands[] = {
 	{ "create", cmd_create, },
+	{ "lookup", cmd_lookup, },
 	{ "mkfs", cmd_mkfs, },
 	{ "quit", cmd_quit, },
 	{ "readdir", cmd_readdir, },

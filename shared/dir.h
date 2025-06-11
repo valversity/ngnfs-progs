@@ -38,4 +38,16 @@ struct ngnfs_readdir_entry {
 int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, u64 pos,
 		      struct ngnfs_readdir_entry *buf, size_t size);
 
+/*
+ * Lookup returns only the inode number, generation, and the POSIX ABI
+ * file type.
+ */
+struct ngnfs_dir_lookup_entry {
+	struct ngnfs_inode_ino_gen ig;
+	u8 dtype;
+};
+
+int ngnfs_dir_lookup(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, char *name,
+		     size_t name_len, struct ngnfs_dir_lookup_entry *lent);
+
 #endif
