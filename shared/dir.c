@@ -136,13 +136,14 @@ static unsigned int pers_dtype_to_abi_dtype(enum ngnfs_dentry_type type)
 	return DT_UNKNOWN;
 }
 
+/*
+ * Initialize the members that stay the same during transaction retries.
+ */
 static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len, mode_t mode)
 {
 	da->hash = name_hash(name, name_len);
 	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
 
-	da->dent.ig.ino = cpu_to_le64(0);
-	da->dent.ig.gen = cpu_to_le64(0);
 	da->dent.pers_dtype = mode_to_pers_type(mode);
 	da->dent.name_len = name_len;
 	memcpy(da->dent.name, name, name_len);
@@ -154,6 +155,21 @@ static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len
 		      sizeof_field(struct dirent_args, __max_name_storage)) != NGNFS_NAME_MAX);
 }
 
+/*
+ * Reset the members that may be altered during a transaction and need
+ * to be reset before retrying a transaction.
+ */
+static void reset_dirent_args(struct dirent_args *da)
+{
+	da->dent.ig.ino = cpu_to_le64(0);
+	da->dent.ig.gen = cpu_to_le64(0);
+}
+
+/*
+ * Update members with results gathered during a transaction. Everything
+ * altered in this function should be reset by the corresponding rest
+ * function.
+ */
 static int update_dirent_args(struct dirent_args *da, struct ngnfs_inode_ino_gen *ig)
 {
 	da->dent.ig.ino = cpu_to_le64(ig->ino);
@@ -283,12 +299,14 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 	}
 
 	ngnfs_txn_init(&op->txn);
-	op->nsec = ktime_to_ns(ktime_get_real());
 	op->parent_ig.ino = 0;
 	op->parent_ig.gen = 0;
 	init_dirent_args(&op->da, name, name_len, mode | S_IFREG);
 
 	do {
+		op->nsec = ktime_to_ns(ktime_get_real());
+		reset_dirent_args(&op->da);
+
 		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir, &op->dir)			?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      ngnfs_inode_alloc(nfi, &op->txn, &op->ig, &op->inode)			?:
