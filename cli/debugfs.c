@@ -58,6 +58,48 @@ static void print_err(char *cmd, int err)
 		log("%s unexpected error: "ENOF, cmd, ENOA(-err));
 }
 
+static void cmd_bcreate(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_dir_lookup_entry lent;
+	char filename[NGNFS_NAME_MAX];
+	char *dir;
+	u64 creates, max, i;
+	int ret;
+
+	if (argc != 3) {
+		printf("usage: %s <directory name> <number creates>\n", argv[0]);
+		return;
+	}
+
+	dir = argv[1];
+
+	/* number of files is link max minus . and .. */
+	max = NGNFS_LINK_MAX - 2;
+	ret = parse_ull(&creates, argv[2], 1, max);
+	if (ret < 0) {
+		printf("number of creates must be between 1 and %llu\n", max);
+		return;
+	}
+
+	ret = ngnfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, dir, strlen(dir))			?:
+	      ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, dir, strlen(dir), &lent);
+
+	if (ret < 0) {
+		print_err("bcreate: mkdir", ret);
+		return;
+	}
+
+	for (i = 0; i < creates; i++) {
+		snprintf(filename, sizeof(filename), "%llu", i);
+
+		ret = ngnfs_dir_create(ctx->nfi, &lent.ig, 0644, filename, strlen(filename));
+		if (ret < 0) {
+			print_err("bcreate: create", ret);
+			return;
+		}
+	}
+}
+
 static void cmd_brename(struct debugfs_context *ctx, int argc, char **argv)
 {
 	struct ngnfs_dir_lookup_entry lent, sub_lent;
@@ -405,6 +447,7 @@ static struct command {
 	char *name;
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
 } commands[] = {
+	{ "bcreate", cmd_bcreate, },
 	{ "brename", cmd_brename, },
 	{ "cd", cmd_cd, },
 	{ "create", cmd_create, },
