@@ -14,6 +14,7 @@
 #include "shared/lk/string.h"
 #include "shared/lk/overflow.h"
 
+#include "shared/bstore.h"
 #include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/format-dev.h"
@@ -1235,21 +1236,24 @@ static int init_journal(struct bstore_instance *inst)
 	if (check_add_overflow(inst->commit_blocks, journal_blocks, &total) ||
 	    check_add_overflow(summary_blocks, total, &total) ||
 	    check_add_overflow(details_blocks, total, &total) ||
-	    check_add_overflow(inst->storage_blocks, total, &total) ||
-	    total > block_total_blocks()) {
-		ret = -EINVAL;
+	    check_add_overflow(inst->storage_blocks, total, &total)) {
+		printf("%s: overflow in calculating total blocks\n", __func__);
+		bstore_print_commit_block(cmt);
+		ret = -EUCLEAN;
 		goto out;
 	}
 
-	/* arbitrary tiny mins for commits/journal, ulong max for the size of the stable_ht */
-	if (inst->commit_blocks < 256								||
-	    journal_blocks < 256								||
-	    journal_blocks >= ULONG_MAX								||
-	    summary_blocks < DIV_ROUND_UP(details_blocks, NGNFS_DEV_SUMMARIES_PER_BLOCK)	||
-	    details_blocks < DIV_ROUND_UP(inst->storage_blocks, NGNFS_DEV_DETAILS_PER_BLOCK)) {
-		ret = -EINVAL;
+	if (total > block_total_blocks()) {
+		printf("%s: error in block accounting: total blocks %llu > device total %llu\n",
+		       __func__, total, block_total_blocks());
+		bstore_print_commit_block(cmt);
+		ret = -EUCLEAN;
 		goto out;
 	}
+
+	ret = bstore_check(cmt);
+	if (ret < 0)
+		goto out;
 
 	inst->stable_ht = htable_alloc(journal_blocks);
 	if (!inst->stable_ht) {

@@ -20,6 +20,7 @@
 #include "shared/lk/crc64.h"
 #include "shared/lk/math.h"
 
+#include "shared/bstore.h"
 #include "shared/devfd.h"
 #include "shared/format-block.h"
 #include "shared/format-dev.h"
@@ -96,6 +97,10 @@ static int format_device_func(int argc, char **argv)
 	cmt->layout.summary_blocks = cpu_to_le64(summary);
 	cmt->layout.details_blocks = cpu_to_le64(details);
 	cmt->layout.storage_blocks = cpu_to_le64(store);
+
+	ret = bstore_check(cmt);
+	if (ret < 0)
+		goto out;
 
 	uuid_generate_random(uuid);
 	uuid_unparse(uuid, uuid_str);
