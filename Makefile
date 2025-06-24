@@ -48,7 +48,7 @@ PADCHECK := $(patsubst %.h,%.o.padcheck,$(wildcard shared/format-*.h))
 GEN_BIN := $(patsubst %.c,%,$(wildcard shared/lk/gen/*.c))
 
 .PHONY: all
-all: $(PADCHECK) $(GEN_BIN) $(BIN) $(DGH) $(LIB)
+all: $(PADCHECK) $(GEN_BIN) $(BIN) $(DGH) $(LIB) shared/lk/crc64table.h
 
 ifneq ($(DEP),)
 -include $(DEP)
@@ -91,6 +91,8 @@ $(PADCHECK): %.o.padcheck: %.h
 $(DGH): scripts/generate-trace-events.awk shared/trace-events.txt
 	gawk -f $< < shared/trace-events.txt > $@
 
+shared/lk/crc64.o: shared/lk/crc64table.h
+
 shared/lk/crc64table.h: shared/lk/gen/gen_crc64table
 	$^ > $@
 
@@ -103,5 +105,6 @@ clean:
 	@rm -f $(BIN) $(OBJ) $(OBJ_S) $(DEP) $(PADCHECK) $(GEN_BIN) $(DGH) $(LIB)\
 		$(foreach d,$(DIR),$(wildcard $(d)/*.[is])) \
 		utask/utask_gen_defs.h \
+		shared/lk/crc64table.h \
 		.sparse.gcc-defines.h .sparse.output
 
