@@ -509,11 +509,15 @@ static int finish_dirty_commit(struct bstore_instance *inst, struct list_head *p
  * are zeroed).  This could be further optimized, but it'd make block
  * naming and buffer sharing a bit more complicated.  It'd probably be
  * worth it.
+ *
+ * If the block is being replayed, mark it as such so that details and
+ * summary blocks don't need to be updated. When dirtying a non-replay
+ * block, clear the replay marking.
  */
 static void dirty_block(struct bstore_instance *inst, struct ngnfs_dev_commit_block *cmt,
 		        struct list_head *pool, u64 lba, u8 type, bool lba_unused,
 			struct page *data_page, struct cached_block *copy_from_cblk,
-			struct cached_block **cblk)
+			struct cached_block **cblk, bool is_replay)
 {
 	struct ngnfs_dev_commit_entry *ent;
 	u64 dlba;
@@ -550,6 +554,7 @@ static void dirty_block(struct bstore_instance *inst, struct ngnfs_dev_commit_bl
 	ent->journ_lba = cpu_to_le64(dlba);
 	ent->crc = 0;
 	memset_zero_sizeof(ent->pad_);
+	ent->is_replay = is_replay;
 	ent->type = type;
 
 	ret = block_create_dirty(dlba, pool, data_page, cblk);
@@ -706,8 +711,11 @@ out:
 }
 
 /*
- * The current dirty commit modified the given details block.  Update
- * its word in its summaries block.
+ * The current dirty commit modified the given details block. Update its
+ * word in its summaries block.
+ *
+ * Currently only called from the final phase of writing a dirty commit,
+ * so nothing else can be called after this.
  */
 static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
 {
@@ -768,7 +776,8 @@ static void write_dirty_commit(struct bstore_instance *inst, struct ngnfs_dev_co
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
 
-		if (ent->type == NGNFS_DEV_BLOCK_TYPE_DETAILS)
+		/* replayed details blocks don't change the summary */
+		if ((ent->type == NGNFS_DEV_BLOCK_TYPE_DETAILS) && !ent->is_replay)
 			update_dirty_summary(inst, le64_to_cpu(ent->lba));
 	}
 
@@ -925,7 +934,7 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 
 		dtracef("dirty_replay_block", "lba %llu journ_lba %llu", lba, journ_lba);
 		dirty_block(inst, dirty_cmt, &pool, lba, ent->type, true, NULL,
-			    inst->replay_blocks[i].cblk, &dirty_cblk);
+			    inst->replay_blocks[i].cblk, &dirty_cblk, 1);
 		block_put(dirty_cblk);
 	}
 
@@ -1061,7 +1070,7 @@ int bstore_write(u64 dev_bnr, struct page *data_page)
 
 	/* update the dirty block details for the write */
 	dirty_block(inst, cmt, &pool, map.details_lba, NGNFS_DEV_BLOCK_TYPE_DETAILS, false,
-		    NULL, det_cblk, &cblk);
+		    NULL, det_cblk, &cblk, 0);
 	dblk = block_data_buf(cblk);
 	det = &dblk->details[map.details_ind];
 	*det = *in_det;
@@ -1073,12 +1082,12 @@ int bstore_write(u64 dev_bnr, struct page *data_page)
 
 	/* make sure we have a dirty summary block for write-time updates */
 	dirty_block(inst, cmt, &pool, map.summary_lba, NGNFS_DEV_BLOCK_TYPE_SUMMARY, false,
-		    NULL, sum_cblk, &cblk);
+		    NULL, sum_cblk, &cblk, 0);
 	block_putp(&cblk);
 
 	/* and dirty the stored block with a reference to the data page */
 	dirty_block(inst, cmt, &pool, map.lba, NGNFS_DEV_BLOCK_TYPE_STORED,
-		    !(le64_to_cpu(stable_det->lifetime_ctr) & 1), data_page, NULL, &cblk);
+		    !(le64_to_cpu(stable_det->lifetime_ctr) & 1), data_page, NULL, &cblk, 0);
 	block_putp(&cblk);
 
 	ret = finish_dirty_commit(inst, &pool);

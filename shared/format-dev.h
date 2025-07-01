@@ -70,7 +70,8 @@ struct ngnfs_dev_commit_block {
 		__le64 lba;
 		__le64 journ_lba;
 		__le64 crc;
-		__u8 pad_[7];
+		__u8 pad_[6];
+		__u8 is_replay; /* XXX make a bit field */
 		__u8 type;
 	} entries[0];
 };
