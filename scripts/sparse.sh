@@ -64,6 +64,8 @@ include="-include $defines"
 # We don't need meaningful strings here, so just use one that works.
 #
 echo "#define __PRETTY_FUNCTION__ __FILE__ " >> $defines
+echo "#define __FUNCTION__ __FILE__ " >> $defines
+echo "#define __func__ __FILE__ " >> $defines
 
 #
 # sparse doesn't seem to notice when it's on a 64bit host.  It warns that
