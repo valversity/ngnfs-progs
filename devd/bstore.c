@@ -323,6 +323,14 @@ static int journal_used_pct(struct bstore_instance *inst)
 	int j = (le64_to_cpu(cmt->journal_head_ctr) - le64_to_cpu(cmt->journal_tail_ctr)) * 100 /
 		journal_blocks(inst);
 
+	dtracef("journal_used_pct",
+		"commit %%%d curr %llu old %llu (diff %llu) "
+		"journal %%%d curr %llu old %llu (diff %llu)",
+		c, le64_to_cpu(cmt->commit_ctr), le64_to_cpu(cmt->oldest_commit_ctr),
+		le64_to_cpu(cmt->commit_ctr) - le64_to_cpu(cmt->oldest_commit_ctr),
+		j, le64_to_cpu(cmt->journal_head_ctr), le64_to_cpu(cmt->journal_tail_ctr),
+		le64_to_cpu(cmt->journal_head_ctr) - le64_to_cpu(cmt->journal_tail_ctr));
+
 	return max(c, j);
 }
 
@@ -353,6 +361,9 @@ static int prepare_dirty_commit(struct bstore_instance *inst, u64 stable_ctr,
 	u64 commit_ctr;
 	u64 lba;
 	int ret;
+
+	dtracef("prepare_dirty_commit_entry", "is_replay %d block_count %d journal_used %d/100",
+		is_replay, block_count, journal_used_pct(inst));
 
 	if (WARN_ON_ONCE(block_count > MAX_PREPARED_ENTRIES)) {
 		ret = -EINVAL;
@@ -420,6 +431,8 @@ out:
 	if (ret < 0)
 		cmt = NULL;
 	*cmt_ret = cmt;
+
+	dtracef("prepare_dirty_commit_exit", "ret %d", ret);
 	return ret;
 }
 
@@ -468,6 +481,8 @@ static int finish_dirty_commit(struct bstore_instance *inst, struct list_head *p
 	u64 phase = current_commit_phase(inst);
 	int ret;
 
+	dtracef("finish_dirty_commit_entry", "phase %llu", phase);
+
 	block_free_pool(pool);
 	utask_wake_task(inst->commit_tsk);
 
@@ -475,6 +490,7 @@ static int finish_dirty_commit(struct bstore_instance *inst, struct list_head *p
 	if (ret == 0)
 	       ret = inst->last_commit_ret;
 
+	dtracef("finish_dirty_commit_exit", "ret %d", ret);
 	return ret;
 }
 
@@ -559,6 +575,8 @@ static void already_dirty_block(struct bstore_instance *inst, u64 lba, struct ca
 {
 	u64 dlba;
 	int ret;
+
+	dtracef("already_dirty_block", "lba %llu", lba);
 
 	/* only commit blocks can have an lba of 0, this is called for others */
 	dlba = dirty_lba(inst, lba);
@@ -669,6 +687,9 @@ static int update_commit_summaries(struct bstore_instance *inst,
 	int ret;
 	int i;
 
+	dtracef("update_commit_summaries", "phase %llu nr_entries %d",
+		inst->commit_phase, le16_to_cpu(cmt->nr_entries));
+
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
 
@@ -697,6 +718,9 @@ static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
 	struct dev_bnr_mapping map;
 
 	map_details_lba(inst, &map, det_lba);
+
+	dtracef("update_dirty_summary", "details lba %llu summary lba %llu",
+		det_lba, map.summary_lba);
 
 	already_dirty_block(inst, det_lba, &det_cblk);
 	already_dirty_block(inst, map.summary_lba, &sum_cblk);
@@ -860,6 +884,14 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 		goto out;
 
 	cmt = block_data_buf(cblk);
+
+	dtracef("replay_oldest_commit_entry",
+		"phase %llu ctr %llu old_ctr %llu head_ctr %llu tail_ctr %llu ents %u in_journ %u",
+		inst->commit_phase, le64_to_cpu(cmt->commit_ctr),
+		le64_to_cpu(cmt->oldest_commit_ctr), le64_to_cpu(cmt->journal_head_ctr),
+		le64_to_cpu(cmt->journal_tail_ctr), le16_to_cpu(cmt->nr_entries),
+		le16_to_cpu(cmt->nr_in_journal));
+
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
 		lba = le64_to_cpu(ent->lba);
@@ -869,6 +901,7 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 		if (!lba_in_journal(inst, journ_lba) || stable_lba(inst, lba) != journ_lba)
 			continue;
 
+		dtracef("read_replay_block", "lba %llu journ_lba %llu", lba, journ_lba);
 		inst->replay_blocks[replay_nr].e = i;
 		ret = block_read(journ_lba, &inst->replay_blocks[replay_nr].cblk);
 		if (ret < 0)
@@ -890,6 +923,7 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 		if (stable_lba(inst, lba) != journ_lba || dirty_lba(inst, lba) != 0)
 			continue;
 
+		dtracef("dirty_replay_block", "lba %llu journ_lba %llu", lba, journ_lba);
 		dirty_block(inst, dirty_cmt, &pool, lba, ent->type, true, NULL,
 			    inst->replay_blocks[i].cblk, &dirty_cblk);
 		block_put(dirty_cblk);
@@ -907,6 +941,8 @@ out:
 	}
 
 	block_put(cblk);
+
+	dtracef("replay_oldest_commit_exit", "replay_nr %d ret %d", replay_nr, ret);
 }
 
 /*
