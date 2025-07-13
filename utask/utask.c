@@ -9,6 +9,7 @@
 #include "shared/lk/compiler_attributes.h"
 #include "shared/lk/list.h"
 
+#include "shared/dtracef.h"
 #include "shared/valgrind_support.h"
 
 #include "utask/utask.h"
@@ -218,6 +219,9 @@ bool utask_am_canceled(void)
 void utask_destroy(struct utask *tsk)
 {
 	if (tsk) {
+		dtracef("utask_destroy", "name %c%c%c()",
+			tsk->name[0], tsk->name[1], tsk->name[2]);
+
 		if (!tsk->finished) {
 			BUG_ON(tsk == utask_current());
 			BUG_ON(tsk->destroyer);
@@ -269,6 +273,8 @@ int utask_run(void)
 		while ((tsk = list_first_entry_or_null(&inst->run_list, struct utask, run_head))) {
 			list_del_init(&tsk->run_head);
 
+			dtracef("utask_run", "switching to %c%c%c()",
+				tsk->name[0], tsk->name[1], tsk->name[2]);
 			ret = utask_switch_to(tsk);
 			if (ret == UTASK_RET_FINISHED) {
 				tsk->finished = 1;
@@ -406,6 +412,15 @@ int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask
 	unsigned long after;
 	void *stack;
 	int ret;
+
+	/*
+	 * dtracef doesn't support strings, so we print the first 3
+	 * chars of the task name.
+	 */
+	BUG_ON(strlen(name) < 3);
+
+	dtracef("utask_create", "task %llu name %c%c%c",
+		inst->next_id, name[0], name[1], name[2]);
 
 	ret = posix_memalign(&stack, UTASK_STACK_SIZE, UTASK_STACK_SIZE);
 	if (ret != 0) {

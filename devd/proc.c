@@ -123,10 +123,15 @@ static void block_mode_ack_utask(void *data)
 	free_proc_request(preq);
 }
 
-static utask_fn_t proc_utask_fns[] = {
-	[NGNFS_MSG_BLOCK_READ] = block_read_utask,
-	[NGNFS_MSG_BLOCK_WRITE] = block_write_utask,
-	[NGNFS_MSG_BLOCK_MODE_ACK] = block_mode_ack_utask,
+struct utask_fn_name {
+	utask_fn_t fn;
+	char *name;
+};
+
+static struct utask_fn_name proc_utask_fns[] = {
+	[NGNFS_MSG_BLOCK_READ] = { block_read_utask, "bread" },
+	[NGNFS_MSG_BLOCK_WRITE] = { block_write_utask, "bwrite" },
+	[NGNFS_MSG_BLOCK_MODE_ACK] = { block_mode_ack_utask, "bmodeack" },
 };
 
 /*
@@ -138,9 +143,11 @@ int proc_recv(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr, void *ctl_
 	struct proc_request *preq;
 	struct utask *tsk;
 	utask_fn_t fn;
+	char *name;
 	int ret;
 
-	if (hdr->type >= ARRAY_SIZE(proc_utask_fns) || ((fn = proc_utask_fns[hdr->type]) == NULL)) {
+	if (hdr->type >= ARRAY_SIZE(proc_utask_fns) ||
+	    ((fn = proc_utask_fns[hdr->type].fn) == NULL)) {
 		ret = -EPROTO;
 		goto out;
 	}
@@ -160,7 +167,8 @@ int proc_recv(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr, void *ctl_
 	if (data_page)
 		get_page(data_page);
 
-	ret = utask_create(fn, preq, &tsk);
+	name = proc_utask_fns[hdr->type].name;
+	ret = utask_create_name(name, fn, preq, &tsk);
 	if (ret < 0)
 		free_proc_request(preq);
 out:
