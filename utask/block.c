@@ -391,8 +391,9 @@ int block_alloc_pool(struct list_head *pool, size_t nr)
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
 	int ret = 0;
+	size_t i = nr;
 
-	while (nr--) {
+	while (i--) {
 		cblk = alloc_cblk(inst);
 		if (!cblk) {
 			ret = -ENOMEM;
@@ -400,6 +401,8 @@ int block_alloc_pool(struct list_head *pool, size_t nr)
 		}
 		list_add_tail(&cblk->fifo_head, pool);
 	}
+
+	dtracef("block_alloc_pool", "pool %p nr %lu ret %d", pool, nr, ret);
 
 	if (ret < 0)
 		block_free_pool(pool);
@@ -410,9 +413,14 @@ int block_alloc_pool(struct list_head *pool, size_t nr)
 void block_free_pool(struct list_head *pool)
 {
 	struct cached_block *cblk;
+	size_t nr = 0;
 
-	while ((cblk = del_first_pool_block(pool)))
+	while ((cblk = del_first_pool_block(pool))) {
 		put_cblk(cblk);
+		nr++;
+	}
+
+	dtracef("block_free_pool", "pool %p freeing %lu unused cblks", pool, nr);
 }
 
 int block_lookup(u64 bnr, struct cached_block **cblk_ret)
