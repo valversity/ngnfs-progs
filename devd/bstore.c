@@ -960,9 +960,21 @@ out:
  */
 static bool should_replay(struct bstore_instance *inst)
 {
-	return inst->stable_cmt.oldest_commit_ctr != inst->stable_cmt.commit_ctr &&
+	bool ret;
+	ret = inst->stable_cmt.oldest_commit_ctr != inst->stable_cmt.commit_ctr &&
 	       (!inst->dirty_cmt || inst->dirty_cmt->oldest_commit_ctr ==
 				    inst->stable_cmt.oldest_commit_ctr);
+
+	dtracef("should_replay", "should %d stable_old_ctr %llu stable_ctr %llu dirty_cmt %p",
+		ret, le64_to_cpu(inst->stable_cmt.oldest_commit_ctr),
+		le64_to_cpu(inst->stable_cmt.commit_ctr), inst->dirty_cmt);
+
+	if (inst->dirty_cmt)
+		dtracef("should_replay_dirty_cmt", "dirty_old_ctr %llu stable_old_ctr %llu",
+			le64_to_cpu(inst->dirty_cmt->oldest_commit_ctr),
+			le64_to_cpu(inst->stable_cmt.oldest_commit_ctr));
+
+	return ret;
 }
 
 /*
