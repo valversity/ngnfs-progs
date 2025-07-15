@@ -168,7 +168,7 @@ int proc_recv(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr, void *ctl_
 		get_page(data_page);
 
 	name = proc_utask_fns[hdr->type].name;
-	ret = utask_create_name(name, fn, preq, &tsk);
+	ret = utask_create_name_reap(name, fn, preq, &tsk);
 	if (ret < 0)
 		free_proc_request(preq);
 out:

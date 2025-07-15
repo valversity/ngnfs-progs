@@ -70,11 +70,12 @@ struct utask {
 	struct list_head tsk_head;
 	struct list_head wait_head;
 	unsigned long canceled:1,
-		      finished:1;
+		      finished:1,
+		      reap:1;	/* if utask scheduler should destroy this */
 	char *name;
 	u64 id;
 	VGS_DEFINE_STACK_ID(vg_stack_id);
-	struct utask *destroyer;
+	struct utask *destroyer; /* the utask trying to destroy this utask */
 	const char *sched_file;
 	const char *sched_func;
 	unsigned int sched_line;
@@ -219,8 +220,8 @@ bool utask_am_canceled(void)
 void utask_destroy(struct utask *tsk)
 {
 	if (tsk) {
-		dtracef("utask_destroy", "name %c%c%c()",
-			tsk->name[0], tsk->name[1], tsk->name[2]);
+		dtracef("utask_destroy", "%c%c%c() finished %d",
+			tsk->name[0], tsk->name[1], tsk->name[2], tsk->finished);
 
 		if (!tsk->finished) {
 			BUG_ON(tsk == utask_current());
@@ -277,9 +278,14 @@ int utask_run(void)
 				tsk->name[0], tsk->name[1], tsk->name[2]);
 			ret = utask_switch_to(tsk);
 			if (ret == UTASK_RET_FINISHED) {
-				tsk->finished = 1;
-				if (tsk->destroyer)
+				dtracef("utask_handle_finished", "name %c%c%c() destroyer %p finished %d",
+					tsk->name[0], tsk->name[1], tsk->name[2], tsk->destroyer, tsk->finished);
+				tsk->finished = 1; /* this lets the destroyer wake up */
+				if (tsk->destroyer) {
 					utask_wake_task(tsk->destroyer);
+				} else if (tsk->reap) {
+					utask_destroy(tsk);
+				}
 			}
 		}
 
@@ -402,10 +408,12 @@ static void push_stack(struct utask *tsk, void *ptr)
 }
 
 /*
- * Allocate and run a new utask.  The new task will be idle and it's up
- * to the caller to wake it.
+ * Allocate and run a new utask. The new task will be idle and it's up
+ * to the caller to wake it. @reap set to 1 means the utask scheduler
+ * should destroy it when it finishes work.
  */
-int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret)
+int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, bool reap,
+			     struct utask **tsk_ret)
 {
 	struct utask_instance *inst = &global_utask_inst;
 	struct utask *tsk = NULL;
@@ -437,6 +445,7 @@ int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask
 	list_add_tail(&tsk->tsk_head, &inst->tsk_list);
 	tsk->canceled = 0;
 	tsk->finished = 0;
+	tsk->reap = reap;
 	tsk->name = name;
 	tsk->id = inst->next_id++;
 	VGS_STACK_REGISTER(tsk->vg_stack_id, (unsigned long)stack, (unsigned long)tsk - 1);
@@ -475,9 +484,9 @@ out:
  * Allocate and run a new utask.  If this returns success then the fn
  * will be called from the newly created utask.
  */
-int utask_create_name(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret)
+int utask_create_name(char *name, utask_fn_t fn, void *data, bool reap, struct utask **tsk_ret)
 {
-	int ret = utask_create_name_nowake(name, fn, data, tsk_ret);
+	int ret = utask_create_name_nowake(name, fn, data, reap, tsk_ret);
 	if (ret == 0)
 		utask_wake_task(*tsk_ret);
 	return ret;

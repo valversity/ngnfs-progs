@@ -100,10 +100,12 @@ do {									\
 		utask_schedule();					\
 } while (0)
 
-#define utask_create(FN_, DATA_, TSK_RET_) \
-	utask_create_name(__stringify(FN_), FN_, DATA_, TSK_RET_)
-#define utask_create_nowake(FN_, DATA_, TSK_RET_) \
-	utask_create_name_nowake(__stringify(FN_), FN_, DATA_, TSK_RET_)
+#define utask_create(FN_, DATA_, TSK_RET_)				\
+	utask_create_name(__stringify(FN_), FN_, DATA_, 0, TSK_RET_)
+#define utask_create_name_reap(NAME_, FN_, DATA_, TSK_RET_)	\
+	utask_create_name(NAME_, FN_, DATA_, 1, TSK_RET_)
+#define utask_create_nowake(FN_, DATA_, TSK_RET_)			\
+	utask_create_name_nowake(__stringify(FN_), FN_, DATA_, 0, TSK_RET_)
 
 /*
  * We make the embedded container type a struct so that we can
@@ -137,8 +139,10 @@ void utask_shutdown(void);
 
 void utask_schedule_info(const char *func, const char *file, unsigned int line);
 
-int utask_create_name(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret);
-int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret);
+int utask_create_name(char *name, utask_fn_t fn, void *data, bool default_reaper,
+		      struct utask **tsk_ret);
+int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, bool default_reaper,
+			     struct utask **tsk_ret);
 struct utask *utask_current(void);
 u64 utask_current_id(void);
 void utask_cancel(struct utask *tsk);
