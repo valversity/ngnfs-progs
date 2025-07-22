@@ -880,70 +880,107 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 	struct cached_block *cblk = NULL;
 	LIST_HEAD(pool);
 	u64 stable_ctr;
+	u64 oldest_ctr;
 	u64 journ_lba;
 	u64 lba;
+	u64 journal_freed = 0;
 	u16 replay_nr = 0;
+	u16 nr;
 	u16 i;
 	int ret;
 
 	stable_ctr = le64_to_cpu(inst->stable_cmt.commit_ctr);
-	lba = commit_ctr_lba(inst, le64_to_cpu(inst->stable_cmt.oldest_commit_ctr));
-	ret = read_block_hdr(inst, lba, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
-	if (ret < 0)
-		goto out;
+	oldest_ctr = le64_to_cpu(inst->stable_cmt.oldest_commit_ctr);
 
-	cmt = block_data_buf(cblk);
+	dtracef("replay_oldest_commit_entry", "stable_ctr %llu oldest_ctr %llu",
+		stable_ctr, oldest_ctr);
 
-	dtracef("replay_oldest_commit_entry",
-		"phase %llu ctr %llu old_ctr %llu head_ctr %llu tail_ctr %llu ents %u in_journ %u",
-		inst->commit_phase, le64_to_cpu(cmt->commit_ctr),
-		le64_to_cpu(cmt->oldest_commit_ctr), le64_to_cpu(cmt->journal_head_ctr),
-		le64_to_cpu(cmt->journal_tail_ctr), le16_to_cpu(cmt->nr_entries),
-		le16_to_cpu(cmt->nr_in_journal));
+	journal_freed = 0;
+	replay_nr = 0;
+	ret = 0;
+	while (oldest_ctr <= stable_ctr) {
 
-	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
-		ent = &cmt->entries[i];
-		lba = le64_to_cpu(ent->lba);
-		journ_lba = le64_to_cpu(ent->journ_lba);
-
-		/* will naturally skip replayed blocks in the commit */
-		if (!lba_in_journal(inst, journ_lba) || stable_lba(inst, lba) != journ_lba)
-			continue;
-
-		dtracef("read_replay_block", "lba %llu journ_lba %llu", lba, journ_lba);
-		inst->replay_blocks[replay_nr].e = i;
-		ret = block_read(journ_lba, &inst->replay_blocks[replay_nr].cblk);
+		/* read the next commit */
+		lba = commit_ctr_lba(inst, oldest_ctr);
+		ret = read_block_hdr(inst, lba, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
 		if (ret < 0)
 			goto out;
 
-		replay_nr++;
-	}
+		cmt = block_data_buf(cblk);
 
-	ret = prepare_dirty_commit(inst, stable_ctr, &pool, replay_nr, true, &dirty_cmt);
-	if (ret < 0)
-		goto out;
+		dtracef("replay_read_oldest_commit",
+			"cmt %llu ents %u in_journ %u replay_nr %u head_ctr %llu tail_ctr %llu",
+			oldest_ctr, le16_to_cpu(cmt->nr_entries),
+			le16_to_cpu(cmt->nr_in_journal), replay_nr,
+			le64_to_cpu(cmt->journal_head_ctr),
+			le64_to_cpu(cmt->journal_tail_ctr));
 
-	for (i = 0; i < replay_nr; i++) {
-		ent = &cmt->entries[inst->replay_blocks[i].e];
-		lba = le64_to_cpu(ent->lba);
-		journ_lba = le64_to_cpu(ent->journ_lba);
+		if (le16_to_cpu(cmt->nr_in_journal) + replay_nr > MAX_PREPARED_ENTRIES)
+			break;
 
-		/* check that block is still current and not dirty in this commit */
-		if (stable_lba(inst, lba) != journ_lba || dirty_lba(inst, lba) != 0)
-			continue;
+		/* record and read all blocks still in journal */
+		nr = 0;
+		for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
+			ent = &cmt->entries[i];
+			lba = le64_to_cpu(ent->lba);
+			journ_lba = le64_to_cpu(ent->journ_lba);
 
-		dtracef("dirty_replay_block", "lba %llu journ_lba %llu", lba, journ_lba);
-		dirty_block(inst, dirty_cmt, &pool, lba, ent->type, true, NULL,
-			    inst->replay_blocks[i].cblk, &dirty_cblk, 1);
-		block_put(dirty_cblk);
-	}
+			/* will naturally skip replayed blocks in the commit */
+			if (!lba_in_journal(inst, journ_lba) || stable_lba(inst, lba) != journ_lba)
+				continue;
 
-	le64_add_cpu(&dirty_cmt->oldest_commit_ctr, 1);
-	le64_add_cpu(&dirty_cmt->journal_tail_ctr, le16_to_cpu(dirty_cmt->nr_in_journal));
+			dtracef("read_replay_block", "lba %llu journ_lba %llu", lba, journ_lba);
+			inst->replay_blocks[nr].e = i;
+			ret = block_read(journ_lba, &inst->replay_blocks[nr].cblk);
+			if (ret < 0)
+				goto out;
+
+			replay_nr++;
+			nr++;
+		}
+
+		/*
+		 * Even if there are no journal blocks to replay, we still must
+		 * update the oldest commit counter and journal tail.
+		 */
+		ret = prepare_dirty_commit(inst, stable_ctr, &pool, nr, true, &dirty_cmt);
+		if (ret < 0)
+			goto out;
+
+		/* dirty journal blocks to force rewrite to stable location */
+		for (i = 0; i < nr; i++) {
+			ent = &cmt->entries[inst->replay_blocks[i].e];
+			lba = le64_to_cpu(ent->lba);
+			journ_lba = le64_to_cpu(ent->journ_lba);
+
+			/* check that block is still current and not dirty in this commit */
+			if (stable_lba(inst, lba) != journ_lba || dirty_lba(inst, lba) != 0)
+				continue;
+
+			dtracef("dirty_replay_block", "lba %llu journ_lba %llu",
+				lba, journ_lba);
+			dirty_block(inst, dirty_cmt, &pool, lba, ent->type, true, NULL,
+				    inst->replay_blocks[i].cblk, &dirty_cblk, 1);
+			block_put(dirty_cblk);
+		}
+
+		journal_freed += le16_to_cpu(cmt->nr_in_journal);
+		oldest_ctr++;
+	};
+
+	/* update oldest commit and available journal blocks */
+	dirty_cmt->oldest_commit_ctr = cpu_to_le64(oldest_ctr);
+	le64_add_cpu(&dirty_cmt->journal_tail_ctr, journal_freed);
 
 	ret = finish_dirty_commit(inst, &pool);
+
+	dtracef("replay_oldest_commit_finish",
+		"new oldest_ctr %llu head_ctr %llu tail_ctr %llu",
+		le64_to_cpu(dirty_cmt->oldest_commit_ctr),
+		le64_to_cpu(dirty_cmt->journal_head_ctr),
+		le64_to_cpu(dirty_cmt->journal_tail_ctr));
 out:
-	/* might as well zero to tidy up */
+	/* might as well zero to tidy up - has caught a lot of bugs! */
 	for (i = 0; i < replay_nr; i++) {
 		block_putp(&inst->replay_blocks[i].cblk);
 		inst->replay_blocks[i].e = 0;
@@ -951,7 +988,7 @@ out:
 
 	block_put(cblk);
 
-	dtracef("replay_oldest_commit_exit", "replay_nr %d ret %d", replay_nr, ret);
+	dtracef("replay_oldest_commit_exit", "replay_nr %u ret %d", replay_nr, ret);
 }
 
 /*
