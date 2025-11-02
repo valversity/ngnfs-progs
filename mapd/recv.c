@@ -25,6 +25,22 @@ static ssize_t msg_size(struct ngnfs_msg_get_maps_result *gmr)
 }
 
 /*
+ * Register and respond to a devd joining the cluster.
+ */
+
+int mapd_devd_register(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc *mdesc)
+{
+	struct ngnfs_msg_devd_hello *hello = mdesc->ctl_buf;
+	struct ngnfs_msg_devd_reply reply;
+	struct ngnfs_msg_desc res_mdesc;
+	int ret;
+
+	
+
+	return ret;
+}
+
+/*
  * Receive and respond to a message from the client requesting initial maps on startup.
  */
 static int map_get_maps(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc *mdesc)
@@ -130,6 +146,7 @@ static int addrs_to_maps(struct ngnfs_fs_info *nfi, struct list_head *list, u8 n
 void mapd_destroy(struct ngnfs_fs_info *nfi)
 {
 	ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_GET_MAPS, map_get_maps);
+	ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_DEVD_HELLO, map_devd_register);
 }
 
 int mapd_setup(struct ngnfs_fs_info *nfi, struct list_head *list, u8 nr)
@@ -140,7 +157,9 @@ int mapd_setup(struct ngnfs_fs_info *nfi, struct list_head *list, u8 nr)
 	if (ret < 0)
 		return ret;
 
-	ret = ngnfs_msg_register_recv(nfi, NGNFS_MSG_GET_MAPS, map_get_maps);
+	ret = ngnfs_msg_register_recv(nfi, NGNFS_MSG_GET_MAPS, map_get_maps) ?:
+	      ngnfs_msg_register_recv(nfi, NGNFS_MSG_DEVD_HELLO, map_devd_register);
+
 	if (ret < 0)
 		mapd_destroy(nfi);
 

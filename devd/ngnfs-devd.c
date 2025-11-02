@@ -37,12 +37,18 @@
 #include "devd/cache-mode.h"
 
 struct devd_options {
+	struct sockaddr_in mapd_server_addr;
 	char *dev_path;
 	struct sockaddr_in listen_addr;
 	char *trace_path;
 };
 
 static struct option_more devd_moreopts[] = {
+	{ .longopt = { "addr", required_argument, NULL, 'a' },
+	  .arg = "addr:port",
+	  .desc = "IPv4 address and port of mapd server to query",
+	  .required = 1, },
+
 	{ .longopt = { "device_path", required_argument, NULL, 'd' },
 	  .arg = "path",
 	  .desc = "path to block device",
@@ -65,6 +71,9 @@ static int parse_devd_opt(int c, char *str, void *arg)
 	int ret = -EINVAL;
 
 	switch(c) {
+	case 'a':
+		ret = parse_ipv4_addr_port(&opts->mapd_server_addr, str);
+		break;
 	case 'd':
 		ret = strdup_nerr(&opts->dev_path, str);
 		break;
@@ -119,6 +128,7 @@ static void main_utask(void *data)
 	      net_init() ?:
 	      net_register_recv(proc_recv) ?:
 	      net_listen(&dm->opts.listen_addr, cache_release_all) ?:
+	      net_connect_mapd(&dm->opts.mapd_server_addr) ?:
 	      utask_wait_event_task(utask_am_canceled());
 
 	net_exit();

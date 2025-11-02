@@ -16,6 +16,8 @@ enum {
 	NGNFS_MSG_BLOCK_MODE_ACK,
 	NGNFS_MSG_GET_MAPS,
 	NGNFS_MSG_GET_MAPS_RESULT,
+	NGNFS_MSG_DEVD_HELLO,
+	NGNFS_MSG_DEVD_HELLO_REPLY,
 	NGNFS_MSG__NR,
 };
 
@@ -119,6 +121,15 @@ struct ngnfs_msg_get_maps_result {
 	__u8 err;
 	__u8 _pad[7];
 	struct ngnfs_devd_map devd_map;
+};
+
+struct ngnfs_msg_devd_hello {
+	struct ngnfs_ipv4_addr addr;
+};
+
+/* XXX can have ctl buf and data both 0 yet? */
+struct ngnfs_msg_devd_reply {
+	__u8 _pad[8];
 };
 
 #endif

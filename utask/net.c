@@ -634,6 +634,42 @@ out:
 }
 
 /*
+ * Connect to mapd and tell it we are a devd listening at listen_addr.
+ */
+int net_connect_mapd(struct sockaddr_in *listen_addr, struct sockaddr_in *mapd_addr)
+{
+	struct ngnfs_msg_devd_hello hello;
+	struct ngnfs_ipv4_addr *addr = &hello.addr;
+	struct ngnfs_msg_header hdr;
+	int ret;
+
+	/* set up the message */
+	addr->device_uuid = 0; /* XXX also need a connection uuid*/
+	addr->addr = cpu_to_le32(listen_addr->sin_addr.s_addr);
+	addr->port = cpu_to_le16(listen_addr->sin_port);
+
+	hdr.crc = 0; /* not necessary for non-data messages */
+	hdr.ctl_size = sizeof(hello);
+	hdr.data_size = 0;
+	hdr.type = NGNFS_MSG_DEVD_HELLO;
+
+	ret = net_connect(mapd_addr);
+	if (ret < 0)
+		goto out;
+
+	/* send a message */
+	ret = net_send(mapd_addr, &hdr, &hello, NULL);
+	if (ret < 0)
+		goto out;
+
+	/* receive the ack */
+
+	/* XXX do something if it dies */
+out:
+	return ret;
+}
+
+/*
  * All receives coming through this processes networking layer are
  * handled through one incoming recv callback.
  */
